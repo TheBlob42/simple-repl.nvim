@@ -1,0 +1,15 @@
+find_node	simple-repl.txt	/*find_node*
+find_node_by_parent	simple-repl.txt	/*find_node_by_parent*
+op_send_to_repl	simple-repl.txt	/*op_send_to_repl*
+open_repl	simple-repl.txt	/*open_repl*
+query_from_node	simple-repl.txt	/*query_from_node*
+query_from_node_by_parent	simple-repl.txt	/*query_from_node_by_parent*
+query_from_root	simple-repl.txt	/*query_from_root*
+send_to_repl	simple-repl.txt	/*send_to_repl*
+simple-repl-config	simple-repl.txt	/*simple-repl-config*
+simple-repl-features	simple-repl.txt	/*simple-repl-features*
+simple-repl-functions	simple-repl.txt	/*simple-repl-functions*
+simple-repl-treesitter	simple-repl.txt	/*simple-repl-treesitter*
+simple-repl-usage	simple-repl.txt	/*simple-repl-usage*
+simple-repl.txt	simple-repl.txt	/*simple-repl.txt*
+v_send_to_repl	simple-repl.txt	/*v_send_to_repl*

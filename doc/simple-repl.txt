@@ -1,0 +1,225 @@
+*simple-repl.txt*                                            Simple REPL utility
+
+License: GPL 3.0
+Website: https://github.com/TheBlob42/simple-repl.nvim
+
+==============================================================================
+FEATURES                                                  *simple-repl-features*
+
+- Starting a new or opening an existing REPL in the embedded |terminal|
+  emulator
+- Send arbitrary text to your REPL
+- Peek at the latest result even when the REPL is currently not visible
+
+==============================================================================
+INSTALLATION & CONFIGURATION                                *simple-repl-config*
+
+Install `simple-repl` with the package manager of your choice:
+>lua
+	-- for example using the `lazy.nvim` plugin manager
+	require('lazy').setup({
+		-- [...]
+		'theblob42/simple-repl'
+		-- [...]
+	})
+<
+You don't need to perform any additinal setup after the installation (like
+calling a `setup` function etc.). Instead check |simple-repl-usage| on how to
+get started with your keybindings etc.
+
+==============================================================================
+USAGE                                                        *simple-repl-usage*
+
+The `simple-repl` plugin does not come with any user commands or default
+keybindings out of the box. Instead it leaves the whole configuration to the
+user and their specific needs. By giving each REPL a specific name you can
+easily implement one REPL per filetype or a global one for your main project
+or you spawn a new dedicated one for each of your projects etc.
+
+First step is always to open a new REPL with a specific name:
+>lua
+	-- "MyREPL" is the custom name of the REPL
+	-- "clj" is the command that starts the REPL process
+	require('simple-repl').open_repl('MyREPL', 'clj')
+<
+The |open_repl| function will not only start the REPL process but also open it
+in a split window. This behavior (and other settings) is customizable by
+passing an optional configuration table to it. If a REPL with this specific
+name already exists it will be reused again.
+
+NOTE: If a REPL is reused the passed command (here: `clj`) will NOT be
+executed again.
+>lua
+	-- keybinding to (re)open a Clojure REPL
+	vim.keymap.set('n', '<leader>r', function()
+		require('simple-repl').open_repl('MyREPL', 'clj')
+	end)
+<
+With an open REPL (not necessarily visible) you can use the |send_to_repl|
+function to send arbitrary text to it:
+>lua
+	require('simple-repl').send_to_repl('MyREPL', { '(+ 1 2)' })
+<
+Usually you would like to send text from your current buffer to the REPL
+instead:
+
+- Use |v_send_to_repl| to send the current visual selection
+- Use |op_send_to_repl| to send text based on a VIM motion
+
+>lua
+	local repl = require('simple-repl')
+
+	-- keybinding to send the current visual selection to the REPL
+	vim.keymap.set('x', '<leader>s', function()
+		repl.v_send_to_repl('MyREPL')
+	end)
+
+	-- keybinding to send a VIM motion to the REPL
+	vim.keymap.set('n', '<leader>s', function()
+		repl.op_send_to_repl('MyREPL')
+	end)
+<
+------------------------------------------------------------------------------
+TREESITTER SUPPORT                                      *simple-repl-treesitter*
+
+Treesitter is a great tool for extracting specific code from the current file
+or based on your cursor position and enabled some very nice keybindings to
+quickly send a certain scope to your REPL. For this purpose there are some
+helper functions available in the `simple-repl.ts` module.
+
+NOTE: You don't have to use these functions and are free to come up with your
+own (better) versions. The `simple-repl.tree` module is never loaded
+automatically. You have to explicitely do so.
+
+find_node({type})                                                    *find_node*
+	Search from the current cursor position upwards the tree to retrieve the
+	text of the first node it finds of the given `type`.
+
+	Parameters: ~
+	  • {type} The node type to search for
+
+find_node_by_parent({parent_type})                         *find_node_by_parent*
+	Search from the current cursor position upwards the tree to retrieve the
+	text of the first node it finds that has a parent node of the give `type`.
+
+	Parameters: ~
+	  • {parent_type} The node type of the parent to search for
+
+query_from_node({type}, {query}, {capture})                    *query_from_node*
+	Search from the current cursor position upwards the tree for the first
+	node of the given `type`. Execute the (parsed) Treesitter `query` on that
+	node and retrieve the text of the given `capture`.
+
+	See |vim.treesitter.query.parse()| for query parsing.
+
+	Parameters: ~
+	  • {type}    The node type to search for
+	  • {query}   The Treesitter query to execute on this node
+	  • {capture} The capture name that should be extracted
+
+                                                     *query_from_node_by_parent*
+query_from_node_by_parent({parent_type}, {query}, {capture})
+	Search from the current cursor position upwards the tree for the first
+	node that has a parent node of the given `type`. Execute the (parsed)
+	Treesitter `query` on that node and retrieve the text of the given
+	`capture`.
+
+	See |vim.treesitter.query.parse()| for query parsing.
+
+	Parameters: ~
+	  • {type}    The node type of the parent to search for
+	  • {query}   The Treesitter query to execute on this node
+	  • {capture} The capture name that should be extracted
+	
+
+query_from_root({query}, {capture})                            *query_from_root*
+	Execute the (parsed) Treesitter `query` on the root of the current tree
+	and retrieve the text of the given `capture`.
+
+	See |vim.treesitter.query.parse()| for query parsing.
+
+	Parameters: ~
+	  • {query}   The Treesitter query to execute on the root
+	  • {capture} The capture name that should be extracted
+	
+==============================================================================
+FUNCTIONS                                                *simple-repl-functions*
+
+open_repl({name}, {cmd}, {opts})                                     *open_repl*
+	Create and/or open a REPL named `name`.
+
+	If a REPL with this name already exists, it will be reused. If it does NOT
+	exist, a new terminal will be created and `cmd` will be executed
+	(otherwise `cmd` will be ignored) By default also opens the REPL in a new
+	split window (can be configured) Use this function to create a new REPL or
+	to quickly open an existing one in a window.
+
+	Parameters: ~
+	  • {name} The name for the REPL
+	  • {cmd}  The command to start the REPL. This is only considered if a new
+		       REPL is created
+	  • {opts} Optional map defining further configuration options:
+			   • path: The working directory the REPL terminal should be
+				 started in (default is the cwd). This is only considered if a
+				 new REPL is created
+			   • win: Where to open the REPL (default is "split")
+				 • "none" Don't open the REPL in any window
+				 • "current" Open in the current window
+				 • "vsplit" Open in a vertical split (|:vsplit|)
+				 • "split" Open in a split (|:split|)
+			   • focus: Whether to focus the newly opened REPL window. Only
+				 relevant if `win` is set to "split" or "vsplit" (default is
+				 `false`)
+
+send_to_repl({name}, {lines}, {opts})                             *send_to_repl*
+	Send the given `lines` to the REPL named `name`.
+	
+	If a REPL with the given `name` does NOT exist this functions does
+	nothing (it will not show an error).
+
+	If the specified REPL is currently not visible in any window on the
+	current tabpage the REPL buffer will be displayed in a floating window
+	called the HUD. This window will automatically vanish on the next cursor
+	movement or if you enter the |command-line|. You can define when to show
+	the HUD and all related options for the float by passing the corresponding
+	options in {opts}.
+
+	Parameters: ~
+	  • {name}  The name of the REPL
+	  • {lines} The lines of text that should be send to the REPL
+	  • {opts}  Optional map defining further configuration options:
+				• new_line: The new line character that should be used for
+				  joining the `lines`. The default is "\n". For example you
+				  can use "<C-o>" for any REPL using `rlwrap` in order to
+				  avoid adding the sent text to the history of it.
+				• hud: Further configuration options for the HUD
+				  • show: If and when to show the HUD
+					• "always"
+					• "never"
+					• "if_not_visible" (default)
+				  • config: Configuration options for the floating window.
+					These will simply be passed to |nvim_open_win| without any
+					adaption or validation
+
+v_send_to_repl({name}, {opts})                                  *v_send_to_repl*
+	Send the current visual selection to the REPL named `name`.
+
+	Use this for your own custom keybindins (see also |simple-repl-usage|).
+
+	Parameters: ~
+	  • {name} The name of the REPL
+	  • {opts} Optional map defining further configuration options which are
+			   just passed to |send_to_repl| (see there for details).
+
+op_send_to_repl({name}, {opts})                                *op_send_to_repl*
+	Send the next VIM motion to the REPL named `name`.
+
+	Use this for your own custom keybindins (see also |simple-repl-usage|).
+
+	Parameters: ~
+	  • {name} The name of the REPL
+	  • {opts} Optional map defining further configuration options which are
+			   just passed to |send_to_repl| (see there for details).
+
+==============================================================================
+vim:tw=78:sw=4:ts=4:noet:ft=help:norl
