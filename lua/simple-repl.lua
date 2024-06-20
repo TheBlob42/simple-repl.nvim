@@ -103,40 +103,78 @@ function M.send_to_repl(name, lines, opts)
         end
         term:send(repl_text)
 
-        local win = assert(vim.fn.bufwinid(term.buf))
+        -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        -- show the REPL HUD if configured
+        -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-        -- close former hud window if it exists
-        if win > 0 and vim.w[win].simple_repl_hud then
-            vim.api.nvim_win_close(win, true)
-            win = assert(vim.fn.bufwinid(term.buf))
+        -- assess the number of REPL windows on the current tabpage
+        local repl_windows, hud_windows, split_windows = 0, {}, 0
+        for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+            if vim.api.nvim_win_get_buf(win) == term.buf then
+                repl_windows = repl_windows + 1
+
+                if vim.w[win].simple_repl_hud then
+                    table.insert(hud_windows, win)
+                else
+                    split_windows = split_windows + 1
+                end
+            end
         end
 
-        if opts.hud.show == 'always' or (opts.hud.show == 'if_not_visible' and win == -1) then
-            -- TODO can we make this "better"
-            -- wait a bit to ensure the REPL output is present and can be considered for the cursor position
-            vim.defer_fn(function()
-                local repl_lines = vim.api.nvim_buf_get_lines(term.buf, 0, -1, false)
-                local latest_text_row = vim.iter(repl_lines)
-                    :enumerate()
-                    :rfind(function(_, s)
-                        return s ~= ''
-                    end)
+        -- check for early returns
+        if repl_windows > 0 then
+            if not vim.tbl_isempty(hud_windows) then
+                if opts.hud.show == 'never' or (opts.hud.show == 'if_not_visible' and split_windows > 0) then
+                    for _, win in ipairs(hud_windows) do
+                        vim.api.nvim_win_close(win, true)
+                    end
+                end
 
-                win = vim.api.nvim_open_win(term.buf, false, opts.hud.config)
+                return
+            end
 
-                vim.w[win].simple_repl_hud = true
-                vim.api.nvim_win_set_cursor(win, { latest_text_row, 0 })
-                vim.api.nvim_create_autocmd({ 'CursorMoved', 'CmdlineEnter' }, {
-                    pattern = '*',
-                    once = true,
-                    callback = function()
-                        if vim.api.nvim_win_is_valid(win) then
-                            vim.api.nvim_win_close(win, true)
-                        end
-                    end,
-                })
-            end, 100)
+            if opts.hud.show == 'if_not_visible' then
+                return
+            end
         end
+
+        local win = vim.api.nvim_open_win(term.buf, false, opts.hud.config)
+        vim.w[win].simple_repl_hud = true
+
+        -- scroll the REPL buffer in the HUD to the latest text (last non-empty line)
+        local scroll = function()
+            local repl_lines = vim.api.nvim_buf_get_lines(term.buf, 0, -1, false)
+            local latest_text_row = vim.iter(repl_lines)
+                :enumerate()
+                :rfind(function(_, s)
+                    return s ~= ''
+                end)
+            vim.api.nvim_win_set_cursor(win, { latest_text_row, 0 })
+            vim.api.nvim_win_call(win, function()
+                vim.cmd.normal { 'zb', bang = true }
+            end)
+        end
+
+        vim.api.nvim_buf_attach(term.buf, false, {
+            on_lines = function()
+                if not vim.api.nvim_win_is_valid(win) then
+                    return true -- detach if window was closed already
+                end
+                scroll()
+            end
+        })
+        scroll()
+
+        vim.api.nvim_create_autocmd({ 'CursorMoved', 'CmdlineEnter' }, {
+            desc = 'Close the REPL HUD on cursor movement',
+            pattern = '*',
+            once = true,
+            callback = function()
+                if vim.api.nvim_win_is_valid(win) then
+                    vim.api.nvim_win_close(win, true)
+                end
+            end,
+        })
     end
 end
 
