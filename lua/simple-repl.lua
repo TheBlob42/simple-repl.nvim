@@ -141,29 +141,19 @@ function M.send_to_repl(name, lines, opts)
         local win = vim.api.nvim_open_win(term.buf, false, opts.hud.config)
         vim.w[win].simple_repl_hud = true
 
-        -- scroll the REPL buffer in the HUD to the latest text (last non-empty line)
-        local scroll = function()
-            local repl_lines = vim.api.nvim_buf_get_lines(term.buf, 0, -1, false)
-            local latest_text_row = vim.iter(repl_lines)
-                :enumerate()
-                :rfind(function(_, s)
-                    return s ~= ''
-                end)
-            vim.api.nvim_win_set_cursor(win, { latest_text_row, 0 })
-            vim.api.nvim_win_call(win, function()
-                vim.cmd.normal { 'zb', bang = true }
-            end)
-        end
-
         vim.api.nvim_buf_attach(term.buf, false, {
-            on_lines = function()
+            on_lines = function(_, _, _, _, _, last_line_in_updated_range)
                 if not vim.api.nvim_win_is_valid(win) then
                     return true -- detach if window was closed already
                 end
-                scroll()
+                vim.schedule(function()
+                    vim.api.nvim_win_set_cursor(win, { last_line_in_updated_range, 0 })
+                    vim.api.nvim_win_call(win, function()
+                        vim.cmd.normal { 'zb', bang = true }
+                    end)
+                end)
             end
         })
-        scroll()
 
         vim.api.nvim_create_autocmd({ 'CursorMoved', 'CmdlineEnter' }, {
             desc = 'Close the REPL HUD on cursor movement',
