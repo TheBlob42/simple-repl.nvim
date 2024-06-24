@@ -2,6 +2,29 @@ local M = {}
 
 local Term = require('simple-repl.term')
 
+-- ~~~~~~~~~~~~~~~~~~~~~~
+-- custom types & classes
+-- ~~~~~~~~~~~~~~~~~~~~~~
+
+---@class SimpleRepl_OpenReplOptions
+---@field path string? The path to start the REPL in. Only considered if the REPL is newly created
+---@field win 'current'|'split'|'vsplit'|'none'? Where to open the REPL window
+---@field focus boolean? Whether to focus the REPL window. Only relevant if `win` is 'split' or 'vsplit'
+
+---@alias SimpleRepl_ShowHudOptions 'always'|'never'|'if_not_visible'
+
+---@class SimpleRepl_HudOptions
+---@field show SimpleRepl_ShowHudOptions? If and when to show the HUD window
+---@field config table? The configuration for the HUD window. See `vim.api.nvim_open_win` for all available options
+
+---@class SimpleRepl_SendToReplOptions
+---@field new_line string? The new line character to use (default: '\n'). This is used to join the given lines before being send to the terminal. Use for example "<C-o>" with 'rlwrap' to avoid adding to the history
+---@field hud SimpleRepl_HudOptions? Options for the HUD window
+
+-- ~~~~~~~~~~~~~~~~~~~~~~
+-- local helper functions
+-- ~~~~~~~~~~~~~~~~~~~~~~
+
 ---Create the simple REPL name
 ---@param name string? Custom postfix for the REPL name
 ---@return string
@@ -15,10 +38,9 @@ local function simple_repl_name(name)
     return base..':'..name
 end
 
----@class SimpleRepl_OpenReplOptions
----@field path string? The path to start the REPL in. Only considered if the REPL is newly created
----@field win 'current'|'split'|'vsplit'|'none'? Where to open the REPL window
----@field focus boolean? Whether to focus the REPL window. Only relevant if `win` is 'split' or 'vsplit'
+-- ~~~~~~~~~~~~~~~~~~~~
+-- public API functions
+-- ~~~~~~~~~~~~~~~~~~~~
 
 ---Create and/or open a REPL named `name`
 ---
@@ -60,16 +82,6 @@ function M.open_repl(name, cmd, opts)
         })
     end
 end
-
----@alias SimpleRepl_ShowHudOptions 'always'|'never'|'if_not_visible'
-
----@class SimpleRepl_HudOptions
----@field show SimpleRepl_ShowHudOptions? If and when to show the HUD window
----@field config table? The configuration for the HUD window. See `vim.api.nvim_open_win` for all available options
-
----@class SimpleRepl_SendToReplOptions
----@field new_line string? The new line character to use (default: '\n'). This is used to join the given lines before being send to the terminal. Use for example "<C-o>" with 'rlwrap' to avoid adding to the history
----@field hud SimpleRepl_HudOptions? Options for the HUD window
 
 ---Send the given lines to the specific REPL
 ---If the REPL does not exist, this function will do nothing
