@@ -167,7 +167,7 @@ function M.send_to_repl(name, lines, opts)
             end
         })
 
-        vim.api.nvim_create_autocmd({ 'CursorMoved', 'CmdlineEnter' }, {
+        vim.api.nvim_create_autocmd({ 'CursorMoved', 'CmdlineEnter', 'InsertEnter' }, {
             desc = 'Close the REPL HUD on cursor movement',
             pattern = '*',
             once = true,

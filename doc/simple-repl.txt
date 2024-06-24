@@ -180,9 +180,9 @@ send_to_repl({name}, {lines}, {opts})                             *send_to_repl*
 	If the specified REPL is currently not visible in any window on the
 	current tabpage the REPL buffer will be displayed in a floating window
 	called the HUD. This window will automatically vanish on the next cursor
-	movement or if you enter the |command-line|. You can define when to show
-	the HUD and all related options for the float by passing the corresponding
-	options in {opts}.
+	movement, if you enter |Insert-mode| or the |Command-line|. You can define
+	when to show the HUD and all related options for the float by passing the
+	corresponding options in {opts}.
 
 	Parameters: ~
 	  • {name}  The name of the REPL
