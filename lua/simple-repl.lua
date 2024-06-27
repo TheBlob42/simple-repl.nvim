@@ -8,8 +8,9 @@ local Term = require('simple-repl.term')
 
 ---@class SimpleRepl_OpenReplOptions
 ---@field path string? The path to start the REPL in. Only considered if the REPL is newly created
----@field win 'current'|'split'|'vsplit'|'none'? Where to open the REPL window
+---@field win 'current'|'split'|'vsplit'|'hud'|'none'? Where to open the REPL window
 ---@field focus boolean? Whether to focus the REPL window. Only relevant if `win` is 'split' or 'vsplit'
+---@field hud SimpleRepl_HudOptions? Options for the HUD window
 
 ---@alias SimpleRepl_ShowHudOptions 'always'|'never'|'if_not_visible'
 
@@ -38,6 +39,85 @@ local function simple_repl_name(name)
     return base..':'..name
 end
 
+---Show the given terminal in a HUD window
+---@param term SimpleRepl_Terminal The terminal to show in the HUD
+---@param opts SimpleRepl_HudOptions? Optional options to customize the HUD window
+local function show_hud(term, opts)
+    opts = vim.tbl_extend('keep', opts or {}, {
+        show = 'if_not_visible',
+        config = {
+            title = ' REPL Output: ' .. term.name .. ' ',
+            relative = 'editor',
+            border = 'single',
+            style = 'minimal',
+            anchor = 'NE',
+            row = 0,
+            col = vim.opt.columns:get(),
+            width = math.max(math.floor(vim.opt.columns:get() / 3), 50),
+            height = math.max(math.floor(vim.opt.lines:get() / 4), 10),
+        }
+    })
+
+    -- assess the number of REPL windows on the current tabpage
+    local repl_windows, hud_windows, split_windows = 0, {}, 0
+    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+        if vim.api.nvim_win_get_buf(win) == term.buf then
+            repl_windows = repl_windows + 1
+
+            if vim.w[win].simple_repl_hud then
+                table.insert(hud_windows, win)
+            else
+                split_windows = split_windows + 1
+            end
+        end
+    end
+
+    -- check for early returns
+    if repl_windows > 0 then
+        if not vim.tbl_isempty(hud_windows) then
+            if opts.show == 'never' or (opts.show == 'if_not_visible' and split_windows > 0) then
+                for _, win in ipairs(hud_windows) do
+                    vim.api.nvim_win_close(win, true)
+                end
+            end
+
+            return
+        end
+
+        if opts.show == 'if_not_visible' then
+            return
+        end
+    end
+
+    local win = vim.api.nvim_open_win(term.buf, false, opts.config)
+    vim.w[win].simple_repl_hud = true
+
+    vim.api.nvim_buf_attach(term.buf, false, {
+        on_lines = function(_, _, _, _, _, last_line_in_updated_range)
+            if not vim.api.nvim_win_is_valid(win) then
+                return true -- detach if window was closed already
+            end
+            vim.schedule(function()
+                vim.api.nvim_win_set_cursor(win, { last_line_in_updated_range, 0 })
+                vim.api.nvim_win_call(win, function()
+                    vim.cmd.normal { 'zb', bang = true }
+                end)
+            end)
+        end
+    })
+
+    vim.api.nvim_create_autocmd({ 'CursorMoved', 'CmdlineEnter', 'InsertEnter' }, {
+        desc = 'Close the REPL HUD on cursor movement',
+        pattern = '*',
+        once = true,
+        callback = function()
+            if vim.api.nvim_win_is_valid(win) then
+                vim.api.nvim_win_close(win, true)
+            end
+        end,
+    })
+end
+
 -- ~~~~~~~~~~~~~~~~~~~~
 -- public API functions
 -- ~~~~~~~~~~~~~~~~~~~~
@@ -51,7 +131,7 @@ end
 ---
 ---Configuration options:
 ---- `path` (string): The path to start the REPL in (defaults to `cwd`). Only considered if the REPL is newly created
----- `win` ('current'|'split'|'vsplit'|'none'): Where to open the REPL window (defaults to `split`)
+---- `win` ('current'|'split'|'vsplit'|'hud'|'none'): Where to open the REPL window (defaults to `split`)
 ---- `focus` (boolean): Whether to focus the REPL window (defaults to `false`). Only relevant if `win` is 'split' or 'vsplit'
 ---
 ---@param name string The name for the REPL
@@ -63,6 +143,10 @@ function M.open_repl(name, cmd, opts)
         path = vim.fn.getcwd(),
         win = 'split',
         focus = false,
+        hud = {
+            -- when opening a REPL in the HUD it should be always shown
+            show = 'always',
+        },
     })
 
     -- make sure the REPL command is actually executed
@@ -76,10 +160,14 @@ function M.open_repl(name, cmd, opts)
     })
 
     if opts.win ~= 'none' then
-        term:show({
-            location = opts.win,
-            focus = opts.focus,
-        })
+        if opts.win == 'hud' then
+            show_hud(term, opts.hud)
+        else
+            term:show({
+                location = opts.win,
+                focus = opts.focus,
+            })
+        end
     end
 end
 
@@ -92,18 +180,7 @@ function M.send_to_repl(name, lines, opts)
     opts = vim.tbl_deep_extend('keep', opts or {}, {
         new_line = '\n',
         hud = {
-            show = 'if_not_visible', -- always, never, if_not_visible
-            config = {
-                title = ' REPL Output: ' .. name .. ' ',
-                relative = 'editor',
-                border = 'single',
-                style = 'minimal',
-                anchor = 'NE',
-                row = 0,
-                col = vim.opt.columns:get(),
-                width = math.max(math.floor(vim.opt.columns:get() / 3), 50),
-                height = math.max(math.floor(vim.opt.lines:get() / 4), 10),
-            },
+            show = 'if_not_visible',
         }
     })
 
@@ -115,68 +192,8 @@ function M.send_to_repl(name, lines, opts)
         end
         term:send(repl_text)
 
-        -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         -- show the REPL HUD if configured
-        -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-        -- assess the number of REPL windows on the current tabpage
-        local repl_windows, hud_windows, split_windows = 0, {}, 0
-        for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-            if vim.api.nvim_win_get_buf(win) == term.buf then
-                repl_windows = repl_windows + 1
-
-                if vim.w[win].simple_repl_hud then
-                    table.insert(hud_windows, win)
-                else
-                    split_windows = split_windows + 1
-                end
-            end
-        end
-
-        -- check for early returns
-        if repl_windows > 0 then
-            if not vim.tbl_isempty(hud_windows) then
-                if opts.hud.show == 'never' or (opts.hud.show == 'if_not_visible' and split_windows > 0) then
-                    for _, win in ipairs(hud_windows) do
-                        vim.api.nvim_win_close(win, true)
-                    end
-                end
-
-                return
-            end
-
-            if opts.hud.show == 'if_not_visible' then
-                return
-            end
-        end
-
-        local win = vim.api.nvim_open_win(term.buf, false, opts.hud.config)
-        vim.w[win].simple_repl_hud = true
-
-        vim.api.nvim_buf_attach(term.buf, false, {
-            on_lines = function(_, _, _, _, _, last_line_in_updated_range)
-                if not vim.api.nvim_win_is_valid(win) then
-                    return true -- detach if window was closed already
-                end
-                vim.schedule(function()
-                    vim.api.nvim_win_set_cursor(win, { last_line_in_updated_range, 0 })
-                    vim.api.nvim_win_call(win, function()
-                        vim.cmd.normal { 'zb', bang = true }
-                    end)
-                end)
-            end
-        })
-
-        vim.api.nvim_create_autocmd({ 'CursorMoved', 'CmdlineEnter', 'InsertEnter' }, {
-            desc = 'Close the REPL HUD on cursor movement',
-            pattern = '*',
-            once = true,
-            callback = function()
-                if vim.api.nvim_win_is_valid(win) then
-                    vim.api.nvim_win_close(win, true)
-                end
-            end,
-        })
+        show_hud(term, opts.hud)
     end
 end
 

@@ -167,9 +167,19 @@ open_repl({name}, {cmd}, {opts})                                     *open_repl*
 				 • "current" Open in the current window
 				 • "vsplit" Open in a vertical split (|:vsplit|)
 				 • "split" Open in a split (|:split|)
+				 • "hud" Open in the HUD (|simple-repl-hud|) window
 			   • focus: Whether to focus the newly opened REPL window. Only
 				 relevant if `win` is set to "split" or "vsplit" (default is
 				 `false`)
+			   • hud: Further configuration options for the HUD. Only relevant
+				 if `win` is set to "hud"
+				  • show: If and when to show the HUD
+					• "always" (default)
+					• "never"
+					• "if_not_visible"
+				  • config: Configuration options for the floating window.
+					These will simply be passed to |nvim_open_win| without any
+					adaption or validation
 
 send_to_repl({name}, {lines}, {opts})                             *send_to_repl*
 	Send the given `lines` to the REPL named `name`.
@@ -179,10 +189,7 @@ send_to_repl({name}, {lines}, {opts})                             *send_to_repl*
 
 	If the specified REPL is currently not visible in any window on the
 	current tabpage the REPL buffer will be displayed in a floating window
-	called the HUD. This window will automatically vanish on the next cursor
-	movement, if you enter |Insert-mode| or the |Command-line|. You can define
-	when to show the HUD and all related options for the float by passing the
-	corresponding options in {opts}.
+	called the HUD (|simple-repl-hud|).
 
 	Parameters: ~
 	  • {name}  The name of the REPL
@@ -220,6 +227,28 @@ op_send_to_repl({name}, {opts})                                *op_send_to_repl*
 	  • {name} The name of the REPL
 	  • {opts} Optional map defining further configuration options which are
 			   just passed to |send_to_repl| (see there for details).
+
+------------------------------------------------------------------------------
+HUD WINDOW                                                     *simple-repl-hud*
+
+The HUD is a floating window that is used to peek into the latest updates in
+the REPL buffer. This is especially useful if the REPL buffer is currently not
+visible in any other window on the current tabpage. The HUD will automatically
+vanish on the next cursor movement, if you enter |Insert-mode| or the
+|Command-line|.
+
+You can define when to show the HUD as well as change all the floating window
+parameters by passing the corresponding options table to |open_repl| and
+|send_to_repl|.
+
+HUD Options: ~
+  • `show`: When to show the HUD
+	• "always": Always show the HUD
+	• "never": Never show the HUD
+	• "if_not_visible": Only show the HUD if the REPL buffer is not visible in
+	  any other window on the current tabpage
+	• `config`: Configuration options for the floating window. These will
+	  simply be passed to |nvim_open_win| without any adaption or validation
 
 ==============================================================================
 vim:tw=78:sw=4:ts=4:noet:ft=help:norl

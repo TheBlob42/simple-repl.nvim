@@ -9,6 +9,7 @@ send_to_repl	simple-repl.txt	/*send_to_repl*
 simple-repl-config	simple-repl.txt	/*simple-repl-config*
 simple-repl-features	simple-repl.txt	/*simple-repl-features*
 simple-repl-functions	simple-repl.txt	/*simple-repl-functions*
+simple-repl-hud	simple-repl.txt	/*simple-repl-hud*
 simple-repl-treesitter	simple-repl.txt	/*simple-repl-treesitter*
 simple-repl-usage	simple-repl.txt	/*simple-repl-usage*
 simple-repl.txt	simple-repl.txt	/*simple-repl.txt*
