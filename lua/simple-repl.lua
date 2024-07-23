@@ -133,6 +133,7 @@ end
 ---- `path` (string): The path to start the REPL in (defaults to `cwd`). Only considered if the REPL is newly created
 ---- `win` ('current'|'split'|'vsplit'|'hud'|'none'): Where to open the REPL window (defaults to `split`)
 ---- `focus` (boolean): Whether to focus the REPL window (defaults to `false`). Only relevant if `win` is 'split' or 'vsplit'
+---- `hud` (table): Configuration options for the HUD window. Only considered if `win` is 'hud'
 ---
 ---@param name string The name for the REPL
 ---@param cmd string The command to start the REPL with
