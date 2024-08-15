@@ -26,8 +26,10 @@ local repl = require('simple-repl')
 local repl_name = 'clojure'
 
 -- This keybinding starts our Clojure REPL (if it was not started yet) and opens it in a split window
--- The REPL process is started via the `clj` command (https://clojure.org/guides/deps_and_cli)
 vim.keymap.set('n', '<localleader>c', function()
+    -- The REPL process here is started via the `clj` command (https://clojure.org/guides/deps_and_cli)
+    -- For better performance (with less interactive features) use `clojure` instead
+    -- For more REPL features you can also use `clojure -Sdeps "{:deps {com.bhauman/rebel-readline {:mvn/version \"0.1.4\"}}}" -m rebel-readline.main`
     repl.open_repl(repl_name, 'clj', {
         --[[
             Search upwards for the "root" directory of the project which contains the `deps.edn` file
