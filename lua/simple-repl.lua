@@ -21,6 +21,7 @@ local Term = require('simple-repl.term')
 ---@class SimpleRepl_SendToReplOptions
 ---@field new_line string? The new line character to use (default: '\n'). This is used to join the given lines before being send to the terminal. Use for example "<C-o>" with 'rlwrap' to avoid adding to the history
 ---@field hud SimpleRepl_HudOptions? Options for the HUD window
+---@field scroll boolean Should the REPL scroll to the bottom to show the most recent output (default: 'true'). Only considered for the windows in the current tabpage
 
 -- ~~~~~~~~~~~~~~~~~~~~~~
 -- local helper functions
@@ -182,7 +183,8 @@ function M.send_to_repl(name, lines, opts)
         new_line = '\n',
         hud = {
             show = 'if_not_visible',
-        }
+        },
+        scroll = true,
     })
 
     local term = Term:get(name)
@@ -195,6 +197,20 @@ function M.send_to_repl(name, lines, opts)
 
         -- show the REPL HUD if configured
         show_hud(term, opts.hud)
+
+        -- scroll all REPL windows on the current tabpage to the bottom using `G`
+        if opts.scroll then
+            for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+                if vim.api.nvim_win_get_buf(win) == term.buf then
+                    -- ignore hud windows as they have their own logic of showing the latest line
+                    if not vim.w[win].simple_repl_hud then
+                        vim.api.nvim_win_call(win, function()
+                            vim.cmd.normal { 'G', bang = true }
+                        end)
+                    end
+                end
+            end
+        end
     end
 end
 

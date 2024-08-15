@@ -206,6 +206,14 @@ send_to_repl({name}, {lines}, {opts})                             *send_to_repl*
                   • config: Configuration options for the floating window.
                     These will simply be passed to |nvim_open_win| without any
                     adaption or validation
+                • scroll: Scroll all corresponding REPL windows on the current
+                  |tabpage| to the bottom to show the latest result. This is
+                  enabled (`true`) by default. Note: We use the |G| motion for
+                  this to also enable "tailed" output (see |terminal|).
+                  Depending on the size of the terminal window and the exact
+                  timing and duration of the executed command this might not
+                  work "properly" and the user has to adjust it manually
+                  afterwards for certain windows.
 
 v_send_to_repl({name}, {opts})                                  *v_send_to_repl*
     Send the current visual selection to the REPL named `name`.
