@@ -20,7 +20,7 @@ function M:get(name)
         self.__index = self
         term.name = name
         term.buf = buf
-        term.job_id = vim.api.nvim_buf_get_var(assert(buf), 'terminal_job_id')
+        term.job_id = vim.bo[buf].channel
         return term
     end
 
@@ -57,9 +57,6 @@ function M:start(name, opts)
         -- `termopen` always uses the current buffer for the connection
         local job_id = vim.fn.termopen(vim.o.shell..';#'..name, {
             cwd = vim.fn.fnamemodify(opts.cwd, ':p'),
-            -- on_stdout = function(_, s)
-            --     P(s)
-            -- end,
         })
 
         term.name = name
