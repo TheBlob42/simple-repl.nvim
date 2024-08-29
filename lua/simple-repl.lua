@@ -99,7 +99,14 @@ local function show_hud(term, opts)
                 return true -- detach if window was closed already
             end
             vim.schedule(function()
-                vim.api.nvim_win_set_cursor(win, { last_line_in_updated_range, 0 })
+                -- if the `scrollback` for the terminal buffer is full line we receive zeros for certain line update events
+                -- to avoid jumping to an "invalid" buffer position we just jump to the last line by default
+                local line = last_line_in_updated_range
+                if last_line_in_updated_range == 0 then
+                    line = vim.api.nvim_buf_line_count(term.buf)
+                end
+
+                vim.api.nvim_win_set_cursor(win, { line, 0 })
                 vim.api.nvim_win_call(win, function()
                     vim.cmd.normal { 'zb', bang = true }
                 end)
