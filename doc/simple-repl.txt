@@ -40,19 +40,26 @@ First step is always to open a new REPL with a specific name:
 >lua
     -- "MyREPL" is the custom name of the REPL
     -- "clj" is the command that starts the REPL process
-    require('simple-repl').open_repl('MyREPL', 'clj')
+    require('simple-repl').open_repl('MyREPL', {
+        create = { cmd = 'clj' }
+    })
 <
 The |open_repl| function will not only start the REPL process but also open it
 in a split window. This behavior (and other settings) is customizable by
 passing an optional configuration table to it. If a REPL with this specific
 name already exists it will be reused again.
 
-NOTE: If a REPL is reused the passed command (here: `clj`) will NOT be
-executed again.
+NOTE: If an existing REPL is reused the passed `create` options will NOT be
+considered again.
 >lua
-    -- keybinding to (re)open a Clojure REPL
+    -- keybinding to (re)open a Clojure REPL for the current project
     vim.keymap.set('n', '<leader>r', function()
-        require('simple-repl').open_repl('MyREPL', 'clj')
+        require('simple-repl').open_repl('MyREPL', {
+            create = {
+                cmd = 'clj',
+                path = vim.fs.root(0, 'deps.edn')
+            }
+        })
     end)
 <
 With an open REPL (not necessarily visible) you can use the |send_to_repl|
@@ -144,41 +151,45 @@ query_from_root({query}, {capture})                            *query_from_root*
 ==============================================================================
 FUNCTIONS                                                *simple-repl-functions*
 
-open_repl({name}, {cmd}, {opts})                                     *open_repl*
+open_repl({name}, {opts})                                            *open_repl*
     Create and/or open a REPL named `name`.
 
     If a REPL with this name already exists, it will be reused. If it does NOT
-    exist, a new terminal will be created and `cmd` will be executed
-    (otherwise `cmd` will be ignored) By default also opens the REPL in a new
-    split window (can be configured) Use this function to create a new REPL or
-    to quickly open an existing one in a window.
+    exist, a new |terminal| buffer will be created (using the settings from
+    `opts.create`). By default this also opens the REPL in a new split window
+    (configurable in `opts.open`) Use this function to create a new REPL or to
+    quickly open an existing one.
 
     Parameters: ~
       • {name} The name for the REPL
-      • {cmd}  The command to start the REPL. This is only considered if a new
-               REPL is created
       • {opts} Optional map defining further configuration options:
-               • path: The working directory the REPL terminal should be
-                 started in (default is the cwd). This is only considered if a
-                 new REPL is created
-               • win: Where to open the REPL (default is "split")
-                 • "none" Don't open the REPL in any window
-                 • "current" Open in the current window
-                 • "vsplit" Open in a vertical split (|:vsplit|)
-                 • "split" Open in a split (|:split|)
-                 • "hud" Open in the HUD (|simple-repl-hud|) window
-               • focus: Whether to focus the newly opened REPL window. Only
-                 relevant if `win` is set to "split" or "vsplit" (default is
-                 `false`)
-               • hud: Further configuration options for the HUD. Only relevant
-                 if `win` is set to "hud"
-                  • show: If and when to show the HUD
-                    • "always" (default)
-                    • "never"
-                    • "if_not_visible"
-                  • config: Configuration options for the floating window.
-                    These will simply be passed to |nvim_open_win| without any
-                    adaption or validation
+               • create: Further configuration options for creating the REPL
+                 if it does not exist yet
+                   • cmd: The command that starts the REPL
+                   • path: The working directory the REPL terminal should be
+                     started in (default is the cwd).
+                   • callback: Callback function that is called after the REPL
+                     buffer has been created (NOTE: This is only called once)
+               • open: Further configuration options on how to open the REPL
+                 in a new window
+                   • win: Where to open the REPL (default is "split")
+                     • "none" Don't open the REPL in any window
+                     • "current" Open in the current window
+                     • "vsplit" Open in a vertical split (|:vsplit|)
+                     • "split" Open in a split (|:split|)
+                     • "hud" Open in the HUD (|simple-repl-hud|) window
+                   • focus: Whether to focus the newly opened REPL window.
+                     Only relevant if `win` is set to "split" or "vsplit"
+                     (default is `false`)
+                   • hud: Further configuration options for the HUD. Only
+                     relevant if `win` is set to "hud"
+                      • show: If and when to show the HUD
+                        • "always" (default)
+                        • "never"
+                        • "if_not_visible"
+                      • config: Configuration options for the floating window.
+                        These will simply be passed to |nvim_open_win| without
+                        any adaption or validation
 
 send_to_repl({name}, {lines}, {opts})                             *send_to_repl*
     Send the given `lines` to the REPL named `name`.

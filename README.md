@@ -29,8 +29,13 @@ The plugin will not perform any automatic setup for you. There is also no `setup
 Create a new REPL or re-open an existing one using the `open_repl` function:
 
 ```lua
--- creating a new REPL for Clojure using the 'clj' command in the current working directory
-require('simple-repl').open_repl('TestREPL', 'clj')
+-- creating a new REPL for Clojure using the 'clj' command in the current project directory
+require('simple-repl').open_repl('TestREPL', {
+    create = {
+        cmd = 'clj',
+        path = vim.fs.root(0, 'deps.edn')
+    }
+})
 ```
 
 Now we can use the `send_to_repl` function to send arbitrary text to our "TestREPL":

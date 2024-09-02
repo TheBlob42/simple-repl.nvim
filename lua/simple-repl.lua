@@ -6,11 +6,19 @@ local Term = require('simple-repl.term')
 -- custom types & classes
 -- ~~~~~~~~~~~~~~~~~~~~~~
 
----@class SimpleRepl_OpenReplOptions
----@field path string? The path to start the REPL in. Only considered if the REPL is newly created
----@field win 'current'|'split'|'vsplit'|'hud'|'none'? Where to open the REPL window
----@field focus boolean? Whether to focus the REPL window. Only relevant if `win` is 'split' or 'vsplit'
----@field hud SimpleRepl_HudOptions? Options for the HUD window
+---@class SimpleRepl_ReplOptions
+---@field create SimpleRepl_ReplCreateOptions? The options for creating the REPL (only considered on the initial creation)
+---@field open SimpleRepl_ReplOpenOptions? The options for opening the REPL in a window
+
+---@class SimpleRepl_ReplCreateOptions
+---@field cmd string? The initial command to start the REPL. If this is not provided the REPL will just be a "plain" terminal
+---@field path string? The path to start the REPL in (defaults to the current working directory)
+---@field callback function? A callback function to execute after the REPL buffer has been created (e.g. to set highlights)
+
+---@class SimpleRepl_ReplOpenOptions
+---@field win 'current'|'split'|'vsplit'|'hud'|'none'? In which window to open the REPL
+---@field focus boolean? Whether to focus the REPL window afterwards (only relevant if `win` is 'split' or 'vsplit')
+---@field hud SimpleRepl_HudOptions? Additional configuration options for the HUD window (only relevant if `win` is 'hud')
 
 ---@alias SimpleRepl_ShowHudOptions 'always'|'never'|'if_not_visible'
 
@@ -130,51 +138,60 @@ end
 -- public API functions
 -- ~~~~~~~~~~~~~~~~~~~~
 
----Create and/or open a REPL named `name`
+---Open a REPL named `name`
 ---
----If a REPL with this name already exists, it will be reused
----If it does NOT exist, a new terminal will be created and `cmd` will be executed (otherwise `cmd` will be ignored)
----By default also opens the REPL in a new split window (using `:split`, can be configured)
----Use this function to create a new REPL or to quickly open an existing one in a window
+---If a REPL with this name does not exists it will be created
+---Specify the creation details under `opts.create`:
+---- `cmd` (string): The initial command to start the REPL
+---- `path` (string): The path to start the REPL in (defaults to `cwd`)
+---- `callback` (function): A callback function to execute once after the REPL buffer has been created (e.g. to set highlights)
 ---
----Configuration options:
----- `path` (string): The path to start the REPL in (defaults to `cwd`). Only considered if the REPL is newly created
+---By default the REPL will be opened in a new split window
+---Specify where the REPL is being opened under `opts.open`:
 ---- `win` ('current'|'split'|'vsplit'|'hud'|'none'): Where to open the REPL window (defaults to `split`)
 ---- `focus` (boolean): Whether to focus the REPL window (defaults to `false`). Only relevant if `win` is 'split' or 'vsplit'
----- `hud` (table): Configuration options for the HUD window. Only considered if `win` is 'hud'
+---- `hud` (table): Additional configuration options for the HUD window. Only relevant if `win` is 'hud'
 ---
 ---@param name string The name for the REPL
----@param cmd string The command to start the REPL with
----@param opts SimpleRepl_OpenReplOptions? Configuration options for the REPL
-function M.open_repl(name, cmd, opts)
+---@param opts SimpleRepl_ReplOptions Configuration options for the REPL
+function M.open_repl(name, opts)
     local repl_name = simple_repl_name(name)
-    opts = vim.tbl_extend('keep', opts or {}, {
-        path = vim.fn.getcwd(),
-        win = 'split',
-        focus = false,
-        hud = {
-            -- when opening a REPL in the HUD it should be always shown
-            show = 'always',
+    opts = vim.tbl_deep_extend('keep', opts or {}, {
+        create = {
+            cmd = '',
+            path = vim.fn.getcwd(),
+            callback = nil,
+        },
+        open = {
+            win = 'split',
+            focus = false,
+            hud = {
+                -- when opening a REPL in the HUD it should be always shown
+                show = 'always',
+            },
         },
     })
 
-    -- make sure the REPL command is actually executed
-    if not vim.endswith(cmd, '\n') then
+    local cmd = opts.create.cmd
+
+    -- make sure the REPL command is actually executed (if provided)
+    if cmd ~= '' and not vim.endswith(cmd, '\n') then
         cmd = cmd .. '\n'
     end
 
     local term = Term:start(repl_name, {
-        cwd = opts.path,
+        cwd = opts.create.path,
         cmd = cmd,
     })
 
-    if opts.win ~= 'none' then
-        if opts.win == 'hud' then
-            show_hud(term, opts.hud)
+    if opts.open.win ~= 'none' then
+        if opts.open.win == 'hud' then
+            show_hud(term, opts.open.hud)
         else
             term:show({
-                location = opts.win,
-                focus = opts.focus,
+                ---@diagnostic disable-next-line: assign-type-mismatch
+                location = opts.open.win,
+                focus = opts.open.focus,
             })
         end
     end
