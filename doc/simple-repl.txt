@@ -256,17 +256,17 @@ vanish on the next cursor movement, if you enter |Insert-mode| or the
 |Command-line|.
 
 You can define when to show the HUD as well as change all the floating window
-parameters by passing the corresponding options table to |open_repl| and
-|send_to_repl|.
+parameters by passing the corresponding options table to the |open_repl| and
+|send_to_repl| functions.
 
 HUD Options: ~
-  • `show`: When to show the HUD
-    • "always": Always show the HUD
-    • "never": Never show the HUD
-    • "if_not_visible": Only show the HUD if the REPL buffer is not visible in
-      any other window on the current tabpage
-    • `config`: Configuration options for the floating window. These will
-      simply be passed to |nvim_open_win| without any adaption or validation
+  • `show`    When to show the HUD:
+            • "always" Always show the HUD
+            • "never" Never show the HUD
+            • "if_not_visible" Only show the HUD if the REPL buffer is not
+              visible in any other window on the current tabpage
+  • `config`  Configuration options for the floating window. These will simply
+            be passed to |nvim_open_win| without any adaption or validation
 
 ==============================================================================
 vim:tw=78:sw=4:ts=4:ft=help:norl:et
