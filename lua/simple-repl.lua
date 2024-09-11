@@ -217,12 +217,9 @@ function M.send_to_repl(name, lines, opts)
         if not vim.endswith(repl_text, opts.new_line) then
             repl_text = repl_text .. opts.new_line
         end
-        term:send(repl_text)
-
-        -- show the REPL HUD if configured
-        show_hud(term, opts.hud)
 
         -- scroll all REPL windows on the current tabpage to the bottom using `G`
+        -- doing this before sending anything to the REPL to enable "autoscroll"
         if opts.scroll then
             for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
                 if vim.api.nvim_win_get_buf(win) == term.buf then
@@ -235,6 +232,11 @@ function M.send_to_repl(name, lines, opts)
                 end
             end
         end
+
+        term:send(repl_text)
+
+        -- show the REPL HUD if configured
+        show_hud(term, opts.hud)
     end
 end
 
