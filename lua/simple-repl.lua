@@ -227,6 +227,14 @@ function M.send_to_repl(name, lines, opts)
                     if not vim.w[win].simple_repl_hud then
                         vim.api.nvim_win_call(win, function()
                             vim.cmd.normal { 'G', bang = true }
+                            -- manually initiate the redraw process to ensure that the cursor position is updated properly
+                            -- otherwise there are times when the buffer is not scrolled to the bottom line properly (no idea why though)
+                            local ok, error = pcall(vim.api.nvim__redraw, { win = win, cursor = true })
+                            if not ok then
+                                -- TODO this needs to be revisited once `nvim__redraw` has been marked stable
+                                vim.api.nvim_err_writeln('Check the experimental status of `nvim__redraw`! Was it removed or renamed?')
+                                vim.api.nvim_err_writeln(error or 'no error found...')
+                            end
                         end)
                     end
                 end
