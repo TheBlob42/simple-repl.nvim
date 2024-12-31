@@ -4,6 +4,23 @@ local metatable = { __index = methods }
 
 local repl_cache = {}
 
+-- TODO
+---@class ReplProcess
+---@field ready boolean Is the REPL process ready to receive commands
+---@field cmd string? The command that is currently executing
+---@field data table? If set use it to collect data from stdin (usually after `cmd` appeared)
+
+---@class Repl
+---@field name string The name of the REPL
+---@field job_id number The channel id for the corresponding terminal job
+
+-- TODO
+-- [ ] "repl is ready" message (print this on the first prompt sign being visible)
+-- [ ] repl-types (line wise and char wise)
+-- [ ] maximum timeout for `send` to not block the editor (or even better never block the editor)
+-- [ ] pass whole instance to process function ??
+-- [X] autoscroll for log buffer
+
 local function sanitize(s)
     return s
         -- https://gist.github.com/fnky/458719343aabd01cfb17a3a4f7296797
@@ -17,34 +34,37 @@ end
 
 ---Process data received from STDIN of the Clojure REPL
 ---
----@param cmd string[] The last command that was send to the REPL
 ---@param stdin string[] The data received via STDIN
----@param result string[] The already processed data for this command
----@return boolean finished If the process is finished or if more data is expected
+---@return boolean finished If the process is finished or should continue
 ---@return string[]? result The processed data (so far). If `finished` is `true` this is the end result
-local function clojure_process(cmd, stdin, result)
-    if not cmd then
+local function clojure_process(r, stdin)
+    if not r.last_cmd then
         return false, nil
     end
 
-    local count = vim.tbl_count(stdin)
-    local last_cmd = cmd[vim.tbl_count(cmd)]
-    if count > 1 and stdin[count] == "" then
-        if vim.endswith(sanitize(stdin[count - 1]), last_cmd) then
-            return false, {}
-        end
-    end
+    local last_cmd = r.last_cmd[vim.tbl_count(r.last_cmd)]
+    local result = r.result and {}
 
     for _, str in ipairs(stdin) do
         local s = sanitize(str)
         if s ~= "" then
-            if result then
-                if s:match('^.*=> $') then -- Clojure
-                -- if str:match('^%*%s*$') then -- LISP
-                    return true, result
+            -- if not r.is_ready then
+            --     if s:match('^.*=> $') then
+            --         return true, nil
+            --     end
+            -- else
+                if vim.endswith(s, last_cmd) then
+                    -- ignore duplicate last command data
+                    result = result or {}
+                elseif result then
+                    if s:match('^.*=> $') then -- Clojure
+                    -- if str:match('^%*%s*$') then -- LISP
+                        return true, result
+                    end
+                    table.insert(result, s)
                 end
-                table.insert(result, s)
-            end
+            -- end
+
         end
     end
 
@@ -99,8 +119,13 @@ local function node_process(cmd, stdin, result)
     return false, result
 end
 
-function repl.get(name)
-    return repl_cache[name]
+function repl.get(name, opts)
+    local r = repl_cache[name]
+    if r or not opts then
+        return r
+    end
+
+    return repl.new(name, opts)
 end
 
 function repl.new(name, opts)
@@ -114,32 +139,29 @@ function repl.new(name, opts)
     vim.api.nvim_set_option_value('buftype', 'nofile', { buf = out_buf })
     vim.api.nvim_set_option_value('swapfile', false, { buf = out_buf })
     vim.api.nvim_set_option_value('bufhidden', 'hide', { buf = out_buf })
+    vim.api.nvim_set_option_value('syntax', 'clojure', { buf = out_buf }) -- TODO configurable
     local repl_buf = vim.api.nvim_create_buf(false, false)
-
-    -- vim.api.nvim_buf_attach(repl_buf, false, {
-    --     on_lines = function(_, _, _, fl, ll, lu)
-    --         P(fl..":"..ll..":"..lu)
-    --         P(vim.api.nvim_buf_get_lines(repl_buf, fl, lu, false))
-    --     end,
-    -- })
 
     local instance = {
         name = name,
         job_id = -1,
-        cmd = opts.cmd,
-        cwd = opts.cwd,
-        bufs = {
+        is_ready = false,
+        config = {
+            cwd = opts.cwd,
+            cmd = opts.cmd,
+        },
+        buffers = {
             repl = repl_buf,
             out = out_buf,
         },
         -- TODO better naming
-        start = false,
-        in_progress = false,
+        process = {
+          cmd = nil,
+          data = nil,
+          timer = vim.loop.new_timer(),
+        },
         result = nil,
         last_cmd = nil,
-        process = function(cmd, data, tmp)
-            -- todo
-        end,
     }
 
     setmetatable(instance, metatable)
@@ -149,20 +171,58 @@ function repl.new(name, opts)
         instance.job_id = vim.fn.termopen(vim.o.shell..';#'..name, {
             cwd = vim.fn.fnamemodify(opts.cwd, ':p'),
             on_stdout = function(_, data)
+                instance.process.timer:stop()
+
+                -- ignore changes from the repl buffer directly
+                if vim.api.nvim_get_current_buf() == instance.buffers.repl then
+                    return
+                end
+
+                -- TODO also timer to check on startup issues
+                if not instance.is_ready then
+                    instance.result = {}
+                    local done = clojure_process(instance, data)
+                    if done then
+                        instance.is_ready = true
+                        instance.result = nil
+                        instance.last_cmd = nil
+                        if instance.cb then
+                            local x = instance.cb
+                            instance.cb = nil
+                            x()
+                        end
+                    end
+                    return
+                end
+
                 -- TODO call a custom function that gets start and result etc. passed so that it is easier to customize
                 -- TODO some sort of "presets" would be nice
-                local done, out = clojure_process(instance.last_cmd, data, instance.result)
+                local done, out = clojure_process(instance, data)
                 -- local done, out = node_process(instance.last_cmd, data, instance.result)
                 P(data)
 
+                -- if instance.last_cmd and instance.last_cmd ~= "SPECIAL" and out then
                 if out then
-                    vim.api.nvim_buf_set_lines(instance.bufs.out, -1, -1, false, out)
+                    vim.api.nvim_buf_set_lines(instance.buffers.out, -1, -1, false, out)
+                    -- scroll to the bottom of the out buffer (autoscroll)
+                    vim.api.nvim_buf_call(instance.buffers.out, function()
+                        vim.cmd.normal{ "G", bang = true }
+                    end)
                     instance.result = {}
                 end
 
                 if done then
                     instance.result = nil
                     instance.last_cmd = nil
+                    if instance.cb then
+                        local x = instance.cb
+                        instance.cb = nil
+                        x()
+                    end
+                else
+                    instance.process.timer:start(5000, 0, vim.schedule_wrap(function()
+                        vim.api.nvim_buf_set_lines(instance.buffers.out, -1, -1, false, { "no data received from REPL..." })
+                    end))
                 end
 
                 -- local last = instance.last_cmd[vim.tbl_count(instance.last_cmd)]
@@ -197,10 +257,15 @@ function repl.new(name, opts)
     end)
 
     if opts.cmd ~= "" then
+        -- TODO testing with the "READY" callback
         if type(opts.cmd) == "string" then
-            instance:send({ opts.cmd }, true)
+            instance:send({ opts.cmd }, function()
+                P("READY")
+            end)
         elseif type(opts.cmd) == "table" then
-            instance:send(opts.cmd, true)
+            instance:send(opts.cmd, function()
+                P("READY TABLE")
+            end)
         else
             -- error
         end
@@ -209,32 +274,49 @@ function repl.new(name, opts)
     return instance
 end
 
--- TODO don't log this option
----@param cmd table
-function methods:send(cmd, skip)
+---@param cmd table|string
+function methods:send(cmd, cb)
+    if type(cmd) == "string" then
+        cmd = vim.split(cmd, '\n')
+    end
+
     if type(cmd) ~= "table" or vim.tbl_count(cmd) == 0 then
         return
     end
 
-    if not skip then
-        self.last_cmd = cmd
+    self.last_cmd = cmd
+    self.cb = cb
+    -- if not self.is_ready then
+    --     self.result = {}
+    -- end
+
+    -- TODO test what works more resilient
+    vim.fn.chansend(self.job_id, table.concat(cmd, "\n") .. "\n")
+    -- vim.fn.chansend(self.job_id, table.concat(cmd, "") .. "\n")
+end
+
+local function open(buf, location)
+    local win = vim.api.nvim_get_current_win()
+
+    location = location or 'vsplit'
+    if location == 'split' then
+        vim.cmd.split()
+    else
+        vim.cmd.vsplit()
     end
-    -- vim.fn.chansend(self.job_id, table.concat(cmd, "\n") .. "\n")
-    vim.fn.chansend(self.job_id, table.concat(cmd, "") .. "\n")
+    vim.api.nvim_set_current_buf(buf)
+
+    local new_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_set_current_win(win)
+    return new_win
 end
 
-function methods:open_repl()
-    local win = vim.api.nvim_get_current_win()
-    vim.cmd.split()
-    vim.api.nvim_set_current_buf(self.bufs.repl)
-    vim.api.nvim_set_current_win(win)
+function methods:open_repl(location)
+    return open(self.buffers.repl, location)
 end
 
-function methods:open_out()
-    local win = vim.api.nvim_get_current_win()
-    vim.cmd.split()
-    vim.api.nvim_set_current_buf(self.bufs.out)
-    vim.api.nvim_set_current_win(win)
+function methods:open_out(location)
+    return open(self.buffers.out, location)
 end
 
 return repl
