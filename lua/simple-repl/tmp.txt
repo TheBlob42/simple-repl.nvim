@@ -1,0 +1,81 @@
+-- OLD IMPLEMENTATION
+local function clojure_process(cmd, stdin, result)
+    if not cmd then
+        return false, nil
+    end
+
+    local last_cmd = cmd[vim.tbl_count(cmd)]
+    for _, str in ipairs(stdin) do
+        local s = sanitize(str)
+        if s ~= "" then
+            if result then
+                if s:match('^.*=> $') then -- Clojure
+                -- if str:match('^%*%s*$') then -- LISP
+                    return true, result
+                end
+                table.insert(result, s)
+            elseif vim.endswith(str, last_cmd .. '\r\r') then
+            -- elseif str == last_cmd .. '\r\r' then
+                result = {}
+            end
+        end
+    end
+
+    return false, result
+end
+
+-- LISP
+if str:match('^%*%s*$') then -- LISP
+
+local last = instance.last_cmd[vim.tbl_count(instance.last_cmd)]
+for _, s in ipairs(data) do
+    if type(last) == "string" and vim.endswith(s:gsub("%c", ""), last) then
+        instance.start = true
+    elseif instance.start then
+        -- https://stackoverflow.com/questions/75200134/suppressing-the-debugger-in-sbcl-with-emacs-and-slime
+        -- (defun abc (c h) (declare (ignore h)) (princ c) (clear-input) (abort))
+        -- (setf *debugger-hook* #'abc)
+        if s:match('^%*%s*$') then -- SBCL
+        -- if s:match('^.*=> $') then -- Clojure
+            local output = vim.iter(instance.result)
+                -- :skip(1)
+                :map(function(line)
+                    -- ignore the additional "count" return value
+                    local new_txt, _ = line:gsub("%c", "")
+                    return new_txt
+                end)
+                :totable()
+            vim.api.nvim_buf_set_lines(instance.bufs.out, -1, -1, false, output)
+            instance.start = false
+            instance.result = {}
+            instance.last_cmd = {}
+            break
+        end
+        table.insert(instance.result, s)
+    end
+end
+
+-- NODE JS
+local function node_process(cmd, stdin, result)
+    if not cmd then
+        return false, nil
+    end
+
+    if not result and vim.tbl_count(stdin) == 2 and stdin[2] == "" then
+        return false, {}
+    end
+
+    if result then
+        for _, str in ipairs(stdin) do
+            str = sanitize(str)
+            if str ~= "" then
+                if str:match('^>%s*$') then -- NODE
+                    return true, result
+                end
+                table.insert(result, str)
+            end
+        end
+    end
+
+    return false, result
+end

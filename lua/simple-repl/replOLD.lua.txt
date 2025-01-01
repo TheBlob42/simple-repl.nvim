@@ -1,4 +1,7 @@
-local M = {}
+local repl = {}
+local methods = {}
+local metatable = { __index = methods }
+
 local repl_cache = {}
 
 ---@class SimpleRepl_ReplProcess
@@ -22,7 +25,7 @@ local repl_cache = {}
 ---@field process SimpleRepl_ReplProcess Information about the currently running process
 ---@field config SimpleRepl_ReplConfig Configuration options for the REPL
 ---@field buffers SimpleRepl_Buffers The corresponding buffers
-local SimpleRepl = {}
+-- -@field send fun(self: SimpleRepl_Repl, cmd: string|table, cb: function?) BLUB
 
 -- TODO
 -- [X] "repl is ready" message (print this on the first prompt sign being visible)
@@ -68,7 +71,6 @@ local function clojure_process(cmd, data, stdin)
                 data = data or {}
             elseif data then
                 if s:match('^.*=> $') then
-                -- if str:match('^%*%s*$') then -- LISP
                     return true, data
                 end
                 table.insert(data, s)
@@ -87,17 +89,17 @@ end
 ---@param name string The name of the REPL
 ---@param opts any? Options to create a REPL if not existing
 ---@return SimpleRepl_Repl? repl
-function M.get(name, opts)
+function repl.get(name, opts)
     local r = repl_cache[name]
     if r or not opts then
         return r
     end
 
-    return SimpleRepl:new(name, opts)
+    return repl.new(name, opts)
 end
 
 ---@return SimpleRepl_Repl
-function SimpleRepl:new(name, opts)
+function repl.new(name, opts)
     opts = vim.tbl_extend("keep", opts or {}, {
         cmd = "",
         cwd = vim.loop.cwd(),
@@ -112,6 +114,7 @@ function SimpleRepl:new(name, opts)
     vim.api.nvim_set_option_value('syntax', 'clojure', { buf = out_buf }) -- TODO configurable
     local repl_buf = vim.api.nvim_create_buf(false, false)
 
+    -- -@type SimpleRepl_Repl
     local instance = {
         name = name,
         job_id = -1,
@@ -132,9 +135,7 @@ function SimpleRepl:new(name, opts)
         },
     }
 
-    -- setmetatable(instance, metatable)
-    setmetatable(instance, self)
-    self.__index = self
+    setmetatable(instance, metatable)
     repl_cache[name] = instance
 
     ---Reset temporary properties when a command finished successfully
@@ -154,6 +155,7 @@ function SimpleRepl:new(name, opts)
     ---@param msg string The message to print in the out buffer
     local start_timeout_timer = function(ms, msg)
         instance.process.timer:start(ms, 0, vim.schedule_wrap(function()
+            -- vim.api.nvim_buf_set_lines(instance.buffers.out, -1, -1, false, { msg })
             instance:print(msg)
         end))
     end
@@ -213,39 +215,44 @@ function SimpleRepl:new(name, opts)
 
     if opts.cmd ~= "" then
         -- TODO testing with the "READY" callback
-        instance:send(opts.cmd, function()
-            instance:print("READY")
-        end)
+        if type(opts.cmd) == "string" then
+            instance:send({ opts.cmd }, function()
+                -- P("READY")
+                instance:print("READY")
+            end)
+        elseif type(opts.cmd) == "table" then
+            instance:send(opts.cmd, function()
+                -- P("READY TABLE")
+                instance:print("READY")
+            end)
+        else
+            -- error
+        end
     end
 
     return instance
 end
 
----Print the given `msg` to the REPL out buffer
----@private
----@param msg string|string[]
-function SimpleRepl:print(msg)
-    if type(msg) == "string" then
-        msg = { msg }
+---comment
+---@param s string|string[]
+function methods:print(s)
+    if type(s) == "string" then
+        s = { s }
     end
 
-    vim.api.nvim_buf_set_lines(self.buffers.out, -1, -1, false, msg)
+    vim.api.nvim_buf_set_lines(self.buffers.out, -1, -1, false, s)
     vim.api.nvim_buf_call(self.buffers.out, function()
         vim.cmd.normal{ "G", bang = true }
     end)
 end
 
----Send a `cmd` to the REPL for execution
----If there is already a command in progress this will print a warning
----@param cmd string|string[] The command to execute
----@param cb function? Optional callback function to be called after `cmd` was executed
-function SimpleRepl:send(cmd, cb)
+---TODO
+---@param cmd table|string
+function methods:send(cmd, cb)
     if self.process.cmd then
         print("There is already a commend in progress...")
         return
     end
-
-    -- TODO
     if type(cmd) == "string" then
         cmd = vim.split(cmd, '\n')
     end
@@ -263,7 +270,7 @@ function SimpleRepl:send(cmd, cb)
     -- vim.fn.chansend(self.job_id, table.concat(cmd, "") .. "\n")
 end
 
----Open a given buffer in a (v)split window
+---Open a given buffer in a new (v)split window
 ---Does NOT switch to the newly opened window
 ---@param buf number
 ---@param location "split"|"vsplit"
@@ -284,18 +291,12 @@ local function open(buf, location)
     return new_win
 end
 
----Open the REPL buffer in a split window
----@param location "split"|"vsplit"
----@return integer win The window id of the newly opened window
-function SimpleRepl:open_repl(location)
+function methods:open_repl(location)
     return open(self.buffers.repl, location)
 end
 
----Open the OUT buffer in a split window
----@param location "split"|"vsplit"
----@return integer win The window id of the newly opened window
-function SimpleRepl:open_out(location)
+function methods:open_out(location)
     return open(self.buffers.out, location)
 end
 
-return M
+return repl
