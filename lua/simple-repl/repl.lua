@@ -3,7 +3,7 @@ local repl_cache = {}
 
 -- TODO
 -- [X] "repl is ready" message (print this on the first prompt sign being visible)
--- [ ] repl-types (line wise and char wise)
+-- [-] repl-types (line wise and char wise)
 -- [ ] maximum timeout for `send` to not block the editor (or even better never block the editor)
 -- [X] autoscroll for log buffer
 -- [ ] show the current namespace
@@ -11,14 +11,21 @@ local repl_cache = {}
 
 ---@class SimpleRepl_ReplProcess
 ---@field cmd string[]? The command that is currently executing
----@field data table? If set use it to collect data from stdin (after `cmd`)
+---@field data table Used to collect data from stdin
 ---@field callback function? Callback to execute after the current `cmd` is done
 ---@field timer uv_timer_t Timer to check for REPL timeouts and other issues
+---@field wait_for_cmd boolean Indicator if the current STDIN data is scanned for the command or the actual result data
+
+---@class SimpleRepl_ReplConfigFilters
+---@field cmd (string | fun(s: string): string)[] Filters to search for the command string
+---@field data (string | fun(s: string): string)[] Filters when gathering result data
 
 ---@class SimpleRepl_ReplConfig
 ---@field cwd string The working directory of the REPL
 ---@field cmd string The command to start the REPL
----@field info_prefix string Prefix being used for informatinal messages in the out buffer
+---@field prompt string The prompt pattern for this REPL 
+---@field filter SimpleRepl_ReplConfigFilters Filter options for command and data
+---@field info_prefix string Prefix being used for informational messages in the out buffer
 
 ---@class SimpleRepl_ReplBuffers
 ---@field repl number The identifier for the repl buffer
@@ -28,137 +35,51 @@ local repl_cache = {}
 ---@field name string The name of the REPL
 ---@field job_id number The channel id for the corresponding terminal job
 ---@field is_ready boolean If the REPL was started and is ready to receive commands
+---@field is_logging boolean Is logging activated (usually only needed for debugging and development)
 ---@field process SimpleRepl_ReplProcess Information about the currently running process
 ---@field config SimpleRepl_ReplConfig Configuration options for the REPL
 ---@field buffers SimpleRepl_ReplBuffers The corresponding buffers
 local SimpleRepl = {}
 
+---@class SimpleRepl_NewConfigFilters
+---@field cmd (string | fun(s: string): string)[]? Filters to search for the command string
+---@field data (string | fun(s: string): string)[]? Filters when gathering result data
+
 ---@class SimpleRepl_NewConfig
 ---@field cmd string The command to start the REPL (e.g. `clj`, `sbcl`, `node`)
----@field cwd string The working directory for the REPL (defaults to cwd)
----@field info_prefix string A prefix used for informational messages in the out buffer (e.g. commentstring)
----@field out_config fun(buf: number) Function to further configure the out buffer (set name, syntax etc.)
+---@field prompt string The prompt pattern for this REPL (e.g. '%S+=> ', '* ', '> ')
+---@field filter SimpleRepl_NewConfigFilters? Filter options for command and data
+---@field cwd string? The working directory for the REPL (defaults to cwd)
+---@field info_prefix string? A prefix used for informational messages in the out buffer (e.g. commentstring)
+---@field out_config fun(buf: number)? Function to further configure the out buffer (set name, syntax etc.)
 
--- TODO should we always eliminate newlines ??? (charwise REPL)
----Sanitize the given string `s` by removing all terminal escape sequences
+---Filter the given string `s`
+---If `filter` is a string use it as a pattern with `gsub` to remove all occurences
+---If `filter` is a function apply it to `s` and return the result
 ---@param s string
+---@param filter string|fun(s: string): string
 ---@return string
-local function sanitize(s, leave_newlines)
+local function sfilter(s, filter)
     local result = s
-        -- https://gist.github.com/fnky/458719343aabd01cfb17a3a4f7296797
-        -- ESC[J, ESC[K, ESC[0K etc. (erase functions)
-        -- ESC[1;34m etc. (color mode)
-        -- ESC[?25l, ESC[?47h, ESC[?2004h etc. (private modes)
-        :gsub('\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?', '')
-        -- all remaining control characters
-        -- :gsub('%c', '')
-    if not leave_newlines then
-        result = result:gsub('%c', '')
+
+    if type(filter) == 'string' then
+        result = s:gsub(filter, '')
+    else
+        result = filter(s)
     end
+
     return result
 end
 
----TODO
+---Process the incoming data from `stdin` for the specific `repl`
 ---@param repl SimpleRepl_Repl
 ---@param stdin string[]
----@param opts table
-local function process_charwise_repl(repl, stdin, opts)
+local function process_stdin(repl, stdin)
+    repl:_log('')
+    repl:_log("STDIN: ", stdin)
+
+    local config = repl.config
     local process = repl.process
-
-    -- if there is not currently set command we should ignore any data from STDIN
-    if not process.cmd then
-        return
-    end
-
-    process.timer:stop()
-
-    if not repl.process.wait_for_cmd and not process.data then
-        repl.process.wait_for_cmd = true
-        process.data = process.data or {}
-    end
-
-    local done = false
-    local cmd = vim.pesc(vim.iter(process.cmd):last())
-    -- P("CMD")
-    -- P(cmd)
-
-    if not repl.is_ready then
-        -- TODO
-        cmd = opts.repl_prompt
-    end
-
-    for _, str in ipairs(stdin) do
-        local s = sanitize(str, true)
-
-        -- P(s)
-        -- P(process.data)
-        if s == '' then
-            goto continue
-        end
-
-        if repl.process.wait_for_cmd then
-            table.insert(process.data, s)
-        end
-
-        if not repl.process.wait_for_cmd and process.data then
-            -- TODO does this work ??
-            if s:match('^'..opts.repl_prompt..'$') then
-                done = true
-                break
-            end
-
-            table.insert(process.data, s)
-            goto continue
-        end
-
-        if table.concat(process.data, ''):match('.*'..cmd..'%c*$') then
-            repl.process.wait_for_cmd = false
-            if repl.is_ready then
-                process.data = {}
-            else
-                process.data = nil
-                done = true
-                repl.is_ready = true
-                break
-            end
-        end
-        ::continue::
-    end
-
-    if process.data and not repl.process.wait_for_cmd then
-        P(process.data)
-        -- local text = table.concat(process.data, ''):gsub("\r\r", '\n'):gsub('\r$', '')
-        -- vim.api.nvim_buf_set_text(repl.buffers.out, -1, -1, -1, -1, vim.split(text, '\n'))
-        -- process.data = {}
-    end
-
-    if done then
-        -- TODO testing
-        if process.data then
-            repl:print(process.data)
-        end
-        process.cmd = nil
-        process.data = nil
-        if process.callback then
-            local cb = assert(process.callback)
-            process.callback = nil
-            cb()
-        end
-    else
-        process.timer:start(5000, 0, vim.schedule_wrap(function()
-            repl:print('no data received from REPL', true)
-        end))
-    end
-end
-
----TODO
----@param repl SimpleRepl_Repl
----@param stdin string[]
----@param opts table
-local function process_linewise_repl(repl, stdin, opts)
-    local process = repl.process
-
-    -- if there is not currently set command we should ignore any data from STDIN
     if not process.cmd then
         return
     end
@@ -169,46 +90,65 @@ local function process_linewise_repl(repl, stdin, opts)
     local cmd = vim.pesc(vim.iter(process.cmd):last())
 
     if not repl.is_ready then
-        cmd = opts.repl_prompt
+        cmd = config.prompt
+        repl:_log('REPL is not ready yet, changing CMD to: "', cmd, '"')
     end
 
     for _, str in ipairs(stdin) do
-        local s = sanitize(str)
+        repl:_log('---')
+        repl:_log('Raw String: "', str, '"')
+        if process.wait_for_cmd then
+            local s = vim.iter(config.filter.cmd):fold(str, sfilter)
 
-        if s == '' then
-            goto continue
-        end
+            repl:_log('Searching CMD - Filtered String: "', s, '"')
 
-        if process.data then
-            if s:match('^'..opts.repl_prompt..'$') then
+            if s == '' then
+                goto continue
+            end
+
+            table.insert(process.data, s)
+
+            if table.concat(process.data, ''):match('.*'..cmd..'%c*$') then
+                repl:_log("Found CMD")
+                process.wait_for_cmd = false
+                process.data = {}
+                if not repl.is_ready then
+                    done = true
+                    repl.is_ready = true
+                    break
+                end
+            end
+        else
+            local s = vim.iter(config.filter.data):fold(str, sfilter)
+
+            repl:_log('Gathering Data - Filtered String: "', s, '"')
+
+            if s == '' then
+                goto continue
+            end
+
+            if s:match('^'..config.prompt..'$') then
+                repl:_log('Found PROMPT')
                 done = true
                 break
             end
 
             table.insert(process.data, s)
-            goto continue
-        end
-
-        if s:match('.*'..cmd..'$') then
-            if repl.is_ready then
-                process.data = {}
-            else
-                done = true
-                repl.is_ready = true
-                break
-            end
         end
         ::continue::
     end
 
-    if process.data then
+    repl:_log('---')
+    repl:_log("Data: ", process.data)
+
+    if not process.wait_for_cmd then
         repl:print(process.data)
         process.data = {}
     end
 
     if done then
         process.cmd = nil
-        process.data = nil
+        process.wait_for_cmd = true
         if process.callback then
             local cb = assert(process.callback)
             process.callback = nil
@@ -219,70 +159,6 @@ local function process_linewise_repl(repl, stdin, opts)
             repl:print('no data received from REPL', true)
         end))
     end
-end
-
----Process data received from STDIN of the Clojure REPL
----If `finished` is true, the `cmd` was finished and `result` contains the latest data received
----If `finished` is false, the `cmd` was not finished yet and `result` contains the data collected so far
----
----The `data` parameter might contain data from previous invocations. Add new data to it and return it in
----the end so it can be processed correctly. If it is not set the `cmd` was not yet registered in the REPL output.
----In this case you should monitor for it before starting to collect result data
----
----@param cmd string[] The currently executed command
----@param data string[]? Previous collected data. If present use this to collect more data and return it
----@param stdin string[] The data received via STDIN
----@return boolean finished If the cmd is finished or if more data is expected
----@return string[]? result The collected data
-local function clojure_process(cmd, data, stdin)
-    local last_cmd = cmd[vim.tbl_count(cmd)]
-
-    for _, str in ipairs(stdin) do
-        local s = sanitize(str)
-        if s ~= "" then
-            -- TODO should only be checked once and then never again (self evaluating)
-            -- TODO what about things that evaluate to themself ???
-            -- ignore duplicate last command data (should we ???)
-            if not data and vim.endswith(s, last_cmd) then
-                -- start collecting data (if not done yet)
-                data = data or {}
-            elseif data then
-                if s:match('^.*=> $') then
-                -- if str:match('^%*%s*$') then -- LISP
-                -- if s:match('^>%s*$') then -- NODE
-                    return true, data
-                end
-                -- TODO check to remove additional prompts that might clutter the output
-                s = s:gsub('%S*=> ', '')
-                table.insert(data, s)
-            end
-        end
-    end
-
-    return false, data
-end
-
--- TODO for node
-local function char_wise_processing(cmd, data, stdin)
-    data = data or {}
-    local last_cmd = cmd[vim.tbl_count(cmd)]
-
-    for _, str in ipairs(stdin) do
-        local s = sanitize(str, true)
-        if s ~= '' then
-            if s:match('^>%s*$') then
-                return true, { table.concat(data, '') }
-            end
-            table.insert(data, s)
-            if vim.endswith(table.concat(data, ''), last_cmd) then
-            -- if vim.endswith(s, "\r\r") then
-                -- data = {}
-                return false, {}
-            end
-        end
-    end
-
-    return false, data
 end
 
 ---Get or create a REPL with the `name`
@@ -291,7 +167,7 @@ end
 ---are provided a new one will be created, otherwise nil is returned
 ---
 ---@param name string The name of the REPL
----@param opts any? Options to create a REPL if not existing
+---@param opts SimpleRepl_NewConfig? Options to create a REPL if not existing
 ---@return SimpleRepl_Repl? repl
 function M.get(name, opts)
     local r = repl_cache[name]
@@ -328,9 +204,21 @@ function SimpleRepl:new(name, opts)
         name = name,
         job_id = -1,
         is_ready = false,
+        is_logging = false,
         config = {
             cwd = opts.cwd,
             cmd = opts.cmd,
+            prompt = opts.prompt,
+            filter = vim.tbl_deep_extend('keep', opts.filter or {}, {
+                cmd = {
+                    '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
+                    '%c',
+                },
+                data = {
+                    '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
+                    '%c',
+                },
+            }),
             info_prefix = opts.info_prefix,
         },
         buffers = {
@@ -349,87 +237,16 @@ function SimpleRepl:new(name, opts)
     self.__index = self
     repl_cache[name] = instance
 
-    ---Reset temporary properties when a command finished successfully
-    local finish_processing = function ()
-        instance.process.data = nil
-        instance.process.cmd = nil
-        if instance.process.callback then
-            -- the callback might set the another callback
-            local cb = assert(instance.process.callback)
-            instance.process.callback = nil
-            cb()
-        end
-    end
-
-    ---Start the timer to check for unfinished commands, no REPL updates etc.
-    ---@param ms number The timeout value in milliseconds
-    ---@param msg string The message to print in the out buffer
-    local start_timeout_timer = function(ms, msg)
-        instance.process.timer:start(ms, 0, vim.schedule_wrap(function()
-            instance:print(msg, true)
-        end))
-    end
-
     vim.api.nvim_buf_call(repl_buf, function()
         instance.job_id = vim.fn.termopen(vim.o.shell..';#'..name, {
             cwd = vim.fn.fnamemodify(opts.cwd, ':p'),
             on_stdout = function(_, stdin)
-                P(stdin)
-                -- process_linewise_repl(instance, stdin, {
-                --     repl_prompt = '%S*=> '
-                -- })
-                process_charwise_repl(instance, stdin, {
-                    repl_prompt = '> '
-                })
+                process_stdin(instance, stdin)
             end,
-            -- on_stdout = function(_, data)
-            --     -- if there is no command no processing should be done
-            --     if not instance.process.cmd then
-            --         return
-            --     end
-            --
-            --     -- ignore changes from the repl buffer directly
-            --     -- if vim.api.nvim_get_current_buf() == instance.buffers.repl then
-            --     --     return
-            --     -- end
-            --
-            --     instance.process.timer:stop()
-            --
-            --     if not instance.is_ready then
-            --         local done = clojure_process(instance.process.cmd, {}, data)
-            --         -- local done = char_wise_processing(instance.process.cmd, {}, data)
-            --         if done then
-            --             instance.is_ready = true
-            --             finish_processing()
-            --         else
-            --             start_timeout_timer(10000, 'REPL is still not ready, did something go wrong?')
-            --         end
-            --         return
-            --     end
-            --
-            --     local done, out = clojure_process(instance.process.cmd, instance.process.data, data)
-            --     -- local done, out = char_wise_processing(instance.process.cmd, instance.process.data, data)
-            --
-            --     P(data) -- TODO
-            --
-            --     if out then
-            --         -- TODO this might be different for "char based" REPLs like `node`
-            --         instance:print(out)
-            --         instance.process.data = {}
-            --         -- instance.process.data = out
-            --     end
-            --
-            --     if done then
-            --         -- TODO char wise testing
-            --         -- instance:print(out)
-            --         finish_processing()
-            --     else
-            --         start_timeout_timer(5000, 'no data received from REPL')
-            --     end
-            -- end,
         })
     end)
 
+    -- TODO ???
     if opts.cmd ~= "" then
         instance:send(opts.cmd, function()
             instance:print("READY", true)
@@ -443,11 +260,20 @@ end
 
 ---Print the given `text` to the REPL out buffer
 ---Automatically scrolls to the bottom of the buffer (autoscroll)
----@param text string|string[] The text to print into the REPLs out buffer
+---If the `text` is `nil` or an empty table, this will print nothing
+---@param text string|string[]? The text to print into the REPLs out buffer
 ---@param info boolean? If the message is considered "informational" and should use the `info_prefix`
 function SimpleRepl:print(text, info)
+    if not text then
+        return
+    end
+
     if type(text) == "string" then
         text = { text }
+    end
+
+    if vim.tbl_isempty(text) then
+        return
     end
 
     if info then
@@ -476,11 +302,14 @@ end
 ---@param cmd string|string[] The command to execute
 ---@param cb function? Optional callback function to be called after `cmd` was executed
 function SimpleRepl:send(cmd, cb)
-    -- TODO testing with node
-    -- if self.process.cmd then
-    --     print("There is already a commend in progress...")
-    --     return
-    -- end
+    if self.process.cmd then
+        print("There is already a commend in progress...")
+        return
+    end
+
+    self:_log('########## SEND CMD ##########')
+    self:_log('CMD: ', cmd)
+    self:_log('##############################')
 
     if type(cmd) == 'table' then
         cmd = table.concat(cmd, '\n')
@@ -497,12 +326,11 @@ function SimpleRepl:send(cmd, cb)
     self.process.cmd = vim.iter(vim.split(cmd, '\n'))
         :rskip(1) -- remove the trailing newline
         :totable()
-    self.process.data = nil
+    self.process.data = {}
     self.process.callback = cb
+    self.process.wait_for_cmd = true
 
     vim.fn.chansend(self.job_id, cmd)
-    -- TODO test what works more resilient
-    -- vim.fn.chansend(self.job_id, table.concat(cmd, "") .. "\n")
 end
 
 ---Open a given buffer in a (v)split window
@@ -544,5 +372,166 @@ function SimpleRepl:kill()
     -- TODO
     -- out buffer, repl buffer, cache
 end
+
+---TODO
+---@param ... any
+function SimpleRepl:_log(...)
+    -- if self.is_logging then
+        ---@diagnostic disable-next-line: param-type-mismatch
+        local file = vim.fs.joinpath(vim.fn.stdpath('log'), 'simple-repl-' .. self.name .. '-log.txt')
+        local line = table.concat(vim.iter({...})
+            :map(function(s)
+                if type(s) ~= "string" then
+                    s = vim.inspect(s)
+                end
+                return s
+            end)
+            :totable(), '')
+        vim.fn.writefile({ line }, file, 'as')
+    -- end
+end
+
+---(De)Activate logging for this REPL
+---@param val boolean
+function SimpleRepl:logging(val)
+    self.is_logging = val
+end
+
+---Open the corresponding log file for this REPL in the current window
+function SimpleRepl:open_log_file()
+    ---@diagnostic disable-next-line: param-type-mismatch
+    local file = vim.fs.joinpath(vim.fn.stdpath('log'), 'simple-repl-' .. self.name .. '-log.txt')
+    if vim.loop.fs_stat(file) then
+        vim.cmd.e(file)
+    else
+        vim.notify("No log file exists for REPL '"..self.name.."'", vim.log.level.warning, {})
+    end
+end
+
+-- ~~~~~~~~~~~
+-- for testing
+-- ~~~~~~~~~~~
+
+function M.v_send_to_repl(name)
+    -- needed due to inconsistencies with the visual selection otherwise (see also: https://github.com/neovim/neovim/discussions/26092)
+    local mode = vim.fn.mode()
+    if mode == 'v' or mode == 'V' or mode == '\22' then
+        vim.cmd.normal { vim.api.nvim_replace_termcodes('<ESC>', true, false, true), bang = true }
+    end
+
+    local row1, col1 = unpack(vim.api.nvim_buf_get_mark(0, '<'))
+    local row2, col2 = unpack(vim.api.nvim_buf_get_mark(0, '>'))
+
+    local lines
+    if col1 == 0 and col2 == vim.v.maxcol then
+        lines = vim.api.nvim_buf_get_lines(0, row1 - 1, row2, false)
+    else
+        lines = vim.api.nvim_buf_get_text(0, row1 - 1, col1, row2 - 1, col2 + 1, {})
+    end
+
+    M.get(name):send(lines)
+end
+
+vim.keymap.set('n', '<leader>xp', function()
+    M.get('python', {
+        cmd = 'python',
+        prompt = '>>> ',
+        out_config = function(b)
+            vim.api.nvim_set_option_value('syntax', 'python', { buf = b })
+            vim.keymap.set('n', '<localleader>r', function()
+                M.get('python'):open_repl("split")
+            end, { buffer = b })
+        end,
+    }):open_out()
+end, { desc = 'python' })
+
+vim.keymap.set('x', '<leader>xp', function()
+    M.v_send_to_repl('python')
+end, {})
+
+vim.keymap.set('n', '<leader>xn', function()
+    M.get('node', {
+        cmd = 'node',
+        prompt = '> ',
+        out_config = function(b)
+            vim.api.nvim_set_option_value('syntax', 'javascript', { buf = b })
+            vim.keymap.set('n', '<localleader>r', function()
+                M.get('node'):open_repl("split")
+            end, { buffer = b })
+        end,
+    }):open_out()
+end, { desc = 'node' })
+
+vim.keymap.set('x', '<leader>xn', function()
+    M.v_send_to_repl('node')
+end, {})
+
+vim.keymap.set('n', '<leader>xC', function()
+    M.get('clj_extended', {
+        cmd = 'clojure -Sdeps "{:deps {com.bhauman/rebel-readline {:mvn/version \\"0.1.4\\"}}}" -m rebel-readline.main',
+        prompt = '%S+=> ',
+        out_config = function(b)
+            vim.api.nvim_set_option_value('syntax', 'clojure', { buf = b })
+            vim.keymap.set('n', '<localleader>r', function()
+                M.get('clj_extended'):open_repl("split")
+            end, { buffer = b })
+        end,
+    }):open_out()
+end, { desc = 'clojure extended' })
+
+vim.keymap.set('x', '<leader>xC', function()
+    M.v_send_to_repl('clj_extended')
+end, {})
+
+vim.keymap.set('n', '<leader>xl', function()
+    M.get('sbcl', {
+        cmd = 'rlwrap sbcl',
+        -- cmd = 'sbcl',
+        prompt = '%* ',
+        filter = {
+            cmd = {
+                function(s)
+                    if vim.endswith(s, '\r\r') or s:match('%* $') then
+                        return s
+                    end
+                    return ''
+                end,
+                '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
+                '%c',
+            } ,
+        },
+        out_config = function(b)
+            vim.api.nvim_set_option_value('syntax', 'lisp', { buf = b })
+            vim.keymap.set('n', '<localleader>r', function()
+                M.get('sbcl'):open_repl("split")
+            end, { buffer = b })
+        end,
+    }):open_out()
+end, { desc = 'lisp' })
+
+vim.keymap.set('x', '<leader>xl', function()
+    M.v_send_to_repl('sbcl')
+end, {})
+
+vim.keymap.set('n', '<leader>xc', function()
+    M.get('clojure', {
+        cmd = 'clojure',
+        prompt = '%S+=> ',
+        out_config = function(b)
+            vim.api.nvim_set_option_value('syntax', 'clojure', { buf = b })
+            vim.keymap.set('n', '<localleader>r', function()
+                M.get('clojure'):open_repl("split")
+            end, { buffer = b })
+        end,
+    }):open_out()
+end, { desc = 'clojure' })
+
+vim.keymap.set('n', '<leader>xL', function()
+    M.get('clojure', {}):open_log_file()
+end, { desc = 'open clojure repl logs' })
+
+vim.keymap.set('x', '<leader>xc', function()
+    M.v_send_to_repl('clojure')
+end, {})
 
 return M

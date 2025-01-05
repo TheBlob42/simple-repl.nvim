@@ -8,7 +8,7 @@ Simple utility for interacting with any REPL inside Neovim
 
 ## Installation
 
-> The plugin was implemented and tested with Neovim version `0.10.0`
+> The plugin was implemented and tested with Neovim version `0.10.3`
 
 Use your preferred way of managing plugins to install `simple-repl.nvim`
 
