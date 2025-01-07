@@ -5,6 +5,7 @@ local repl_cache = {}
 -- [X] "repl is ready" message (print this on the first prompt sign being visible)
 -- [-] repl-types (line wise and char wise)
 -- [ ] maximum timeout for `send` to not block the editor (or even better never block the editor)
+    -- same for the REPL start if something is blocking or weird going on
 -- [X] autoscroll for log buffer
 -- [ ] show the current namespace
 -- [ ] autoload the repl namespace for Clojure (disable debugger for SBCL)
@@ -75,7 +76,6 @@ end
 ---@param repl SimpleRepl_Repl
 ---@param stdin string[]
 local function process_stdin(repl, stdin)
-    repl:_log('')
     repl:_log("STDIN: ", stdin)
 
     local config = repl.config
@@ -91,25 +91,29 @@ local function process_stdin(repl, stdin)
 
     if not repl.is_ready then
         cmd = config.prompt
-        repl:_log('REPL is not ready yet, changing CMD to: "', cmd, '"')
+        repl:_log('REPL is not ready yet, changing CMD to prompt: "', cmd, '"')
     end
 
     for _, str in ipairs(stdin) do
         repl:_log('---')
-        repl:_log('Raw String: "', str, '"')
         if process.wait_for_cmd then
             local s = vim.iter(config.filter.cmd):fold(str, sfilter)
 
-            repl:_log('Searching CMD - Filtered String: "', s, '"')
+            repl:_log('Searching CMD')
+                :_log('Raw String: "', str, '"')
+                :_log('Filtered String: "', s, '"')
 
             if s == '' then
                 goto continue
             end
 
+            -- TODO if (raw) str ends with newline and does not match CMD we can probably skip it
+            -- preventing the terminal from blocking the whole editor (for too long)
+
             table.insert(process.data, s)
 
             if table.concat(process.data, ''):match('.*'..cmd..'%c*$') then
-                repl:_log("Found CMD")
+                repl:_log('Found CMD ("', cmd, '")')
                 process.wait_for_cmd = false
                 process.data = {}
                 if not repl.is_ready then
@@ -121,14 +125,16 @@ local function process_stdin(repl, stdin)
         else
             local s = vim.iter(config.filter.data):fold(str, sfilter)
 
-            repl:_log('Gathering Data - Filtered String: "', s, '"')
+            repl:_log('Gathering Data')
+                :_log('Raw String: "', str, '"')
+                :_log('Filtered String: "', s, '"')
 
             if s == '' then
                 goto continue
             end
 
             if s:match('^'..config.prompt..'$') then
-                repl:_log('Found PROMPT')
+                repl:_log('Found PROMPT ("^', config.prompt, '$")')
                 done = true
                 break
             end
@@ -139,7 +145,8 @@ local function process_stdin(repl, stdin)
     end
 
     repl:_log('---')
-    repl:_log("Data: ", process.data)
+        :_log("Data: ", process.data)
+        :_log('')
 
     if not process.wait_for_cmd then
         repl:print(process.data)
@@ -211,10 +218,12 @@ function SimpleRepl:new(name, opts)
             prompt = opts.prompt,
             filter = vim.tbl_deep_extend('keep', opts.filter or {}, {
                 cmd = {
+                    '.',
                     '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
                     '%c',
                 },
                 data = {
+                    '.',
                     '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
                     '%c',
                 },
@@ -246,14 +255,9 @@ function SimpleRepl:new(name, opts)
         })
     end)
 
-    -- TODO ???
-    if opts.cmd ~= "" then
-        instance:send(opts.cmd, function()
-            instance:print("READY", true)
-        end)
-    else
+    instance:send(opts.cmd, function()
         instance:print("READY", true)
-    end
+    end)
 
     return instance
 end
@@ -301,15 +305,16 @@ end
 ---If there is already a command in progress this will print a warning and do nothing else
 ---@param cmd string|string[] The command to execute
 ---@param cb function? Optional callback function to be called after `cmd` was executed
+---@see SimpleRepl_Repl.send_async
 function SimpleRepl:send(cmd, cb)
     if self.process.cmd then
-        print("There is already a commend in progress...")
+        vim.notify('There is already a command in progress for "'..self.name..'"!', vim.log.levels.info, {})
         return
     end
 
     self:_log('########## SEND CMD ##########')
-    self:_log('CMD: ', cmd)
-    self:_log('##############################')
+        :_log('CMD: ', cmd)
+        :_log('##############################')
 
     if type(cmd) == 'table' then
         cmd = table.concat(cmd, '\n')
@@ -331,6 +336,34 @@ function SimpleRepl:send(cmd, cb)
     self.process.wait_for_cmd = true
 
     vim.fn.chansend(self.job_id, cmd)
+end
+
+---Send multiple commands after another to the REPL for execution
+---You can already use the callback of [send](lua://SimpleRepl_Repl.send) for it, but the creates a callback "hell"
+---This is similar to the `async/await` functionality of other programming languages
+---
+---## Example
+---```lua
+---require('simple.repl.repl').get('REPL'):async_send(function(send)
+---    -- these commands are send one after another
+---    -- waiting for the previous to finish first
+---    send("cmd1")
+---    send("cmd2")
+---    send("cmd3")
+---    -- final code to execute
+---end)
+---```
+---@param fn fun(send: fun(cmd: string|string[]))
+---@see SimpleRepl_Repl.send
+function SimpleRepl:send_async(fn)
+    local cb
+    local send = function(cmd)
+        coroutine.yield(self:send(cmd, cb))
+    end
+    cb = coroutine.wrap(function()
+        fn(send)
+    end)
+    cb()
 end
 
 ---Open a given buffer in a (v)split window
@@ -368,33 +401,47 @@ function SimpleRepl:open_out(location)
     return open(self.buffers.out, location)
 end
 
+-- TODO on_exit hook
 function SimpleRepl:kill()
-    -- TODO
-    -- out buffer, repl buffer, cache
+    vim.fn.jobstop(self.job_id)
+    vim.api.nvim_buf_delete(self.buffers.repl, { force = true })
+    self:print('REPL was closed', true)
+    repl_cache[self.name] = nil
 end
 
----TODO
+---(De)Activate logging for this REPL
+---@param val boolean
+---@return SimpleRepl_Repl repl Enable fluent method chaining
+function SimpleRepl:logging(val)
+    self.is_logging = val
+    return self
+end
+
+---Log to a REPL specific log file for inspection
+---All passed parameters will be concatenated to a single line
+---For multiple lines you have to call this function multiple times
+---
+---If logging is **not** activated this function does **nothing**
+---
 ---@param ... any
+---@return SimpleRepl_Repl repl Enable fluent method chaining
+---@see SimpleRepl_Repl.logging
 function SimpleRepl:_log(...)
-    -- if self.is_logging then
+    if self.is_logging then
         ---@diagnostic disable-next-line: param-type-mismatch
         local file = vim.fs.joinpath(vim.fn.stdpath('log'), 'simple-repl-' .. self.name .. '-log.txt')
         local line = table.concat(vim.iter({...})
             :map(function(s)
                 if type(s) ~= "string" then
+                    -- make sure the "thing" is in a human-readable state
                     s = vim.inspect(s)
                 end
                 return s
             end)
             :totable(), '')
         vim.fn.writefile({ line }, file, 'as')
-    -- end
-end
-
----(De)Activate logging for this REPL
----@param val boolean
-function SimpleRepl:logging(val)
-    self.is_logging = val
+    end
+    return self
 end
 
 ---Open the corresponding log file for this REPL in the current window
@@ -527,7 +574,7 @@ vim.keymap.set('n', '<leader>xc', function()
 end, { desc = 'clojure' })
 
 vim.keymap.set('n', '<leader>xL', function()
-    M.get('clojure', {}):open_log_file()
+    M.get('clojure'):open_log_file()
 end, { desc = 'open clojure repl logs' })
 
 vim.keymap.set('x', '<leader>xc', function()
