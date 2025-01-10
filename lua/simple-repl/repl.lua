@@ -1,6 +1,8 @@
 local M = {}
 local repl_cache = {}
 
+local todo_callback
+
 -- TODO
 -- [X] "repl is ready" message (print this on the first prompt sign being visible)
 -- [-] repl-types (line wise and char wise)
@@ -70,6 +72,113 @@ local function sfilter(s, filter)
     end
 
     return result
+end
+
+local function process_line_stdin(repl, stdin)
+    repl:_log('-------')
+        :_log("STDIN: ", stdin)
+
+    local config = repl.config
+    local process = repl.process
+    if not process.cmd then
+        return
+    end
+
+    process.timer:stop()
+
+    local done = false
+    local cmd = process.cmd[1]
+
+    if not repl.is_ready then
+        repl:_log('REPL is not ready yet!')
+        cmd = nil
+    end
+
+    for _, str in ipairs(stdin) do
+        -- TODO make it general
+        local s = vim.iter(config.filter.data):fold(str, sfilter)
+
+        -- TODO make it nice & document
+        if cmd then
+            local prompt_filter, n = s:gsub('^'..config.prompt, '')
+            while n > 0 do
+                s = prompt_filter
+                prompt_filter, n = s:gsub('^'..config.prompt, '')
+            end
+        end
+
+        repl:_log('---')
+            :_log('RAW string: "', str, '"')
+            :_log('FILTERED string: "', s, '"')
+
+        if s == '' then
+            repl:_log('Skip EMPTY string!')
+            goto continue
+        end
+
+        if s:match('^'..config.prompt..'$') then
+            if cmd then
+                goto continue -- intermediate prompts (we are NOT done yet)
+            end
+
+            repl:_log('Found final PROMPT: "^', config.prompt, '$"')
+            done = true
+            repl.is_ready = true
+            break
+        end
+
+        if not repl.is_ready then
+            goto continue
+        end
+
+        table.insert(process.data, s)
+        local data_string = table.concat(process.data, '')
+        repl:_log('Data string: "', data_string, '"')
+
+        -- no CMD just print everything that comes in
+        -- data is not part of CMD must be output
+        if not (cmd and vim.startswith(cmd, data_string)) then
+            if cmd then
+                repl:_log('CMD: "', cmd, '"')
+                    :_log('Does not start with "', data_string, '" --> PRINT')
+            else
+                repl:_log('No CMD anymore --> PRINT')
+            end
+            repl:print(process.data)
+            process.data = {}
+            goto continue
+        end
+
+        if data_string:match('.*'..vim.pesc(cmd)..'%c*$') then
+            repl:_log('Found CMD: "', cmd, '"')
+            process.data = {}
+            process.cmd = vim.iter(process.cmd):skip(1):totable()
+            cmd = process.cmd[1]
+            repl:_log('Next CMD is: "', cmd, '"')
+        end
+        ::continue::
+    end
+
+    if done then
+        repl:_log("DONE")
+        process.cmd = nil
+        process.wait_for_cmd = true
+        if process.callback then
+            local cb = assert(process.callback)
+            process.callback = nil
+            cb()
+        end
+        return
+    else
+        process.timer:start(5000, 0, vim.schedule_wrap(function()
+            repl:print('no data received from REPL', true)
+        end))
+    end
+
+
+    if todo_callback then
+        todo_callback()
+    end
 end
 
 ---Process the incoming data from `stdin` for the specific `repl`
@@ -165,6 +274,10 @@ local function process_stdin(repl, stdin)
         process.timer:start(5000, 0, vim.schedule_wrap(function()
             repl:print('no data received from REPL', true)
         end))
+
+        if todo_callback then
+            todo_callback()
+        end
     end
 end
 
@@ -207,6 +320,27 @@ function SimpleRepl:new(name, opts)
     end
     local repl_buf = vim.api.nvim_create_buf(false, false)
 
+    local default_filter = {
+        '.',
+        '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
+        '%c',
+    }
+    local merge_filter = function(filter)
+        if not filter then
+            return default_filter
+        end
+
+        if filter.replace then
+            return filter
+        end
+
+        local result = { unpack(default_filter) }
+        for _, f in ipairs(filter) do
+            table.insert(result, f)
+        end
+        return result
+    end
+
     local instance = {
         name = name,
         job_id = -1,
@@ -216,18 +350,22 @@ function SimpleRepl:new(name, opts)
             cwd = opts.cwd,
             cmd = opts.cmd,
             prompt = opts.prompt,
-            filter = vim.tbl_deep_extend('keep', opts.filter or {}, {
-                cmd = {
-                    '.',
-                    '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
-                    '%c',
-                },
-                data = {
-                    '.',
-                    '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
-                    '%c',
-                },
-            }),
+            filter = {
+                cmd = merge_filter(vim.tbl_get(opts, 'filter', 'cmd')),
+                data = merge_filter(vim.tbl_get(opts, 'filter', 'data')),
+            },
+            -- filter = vim.tbl_deep_extend('keep', opts.filter or {}, {
+            --     cmd = {
+            --         '.',
+            --         '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
+            --         '%c',
+            --     },
+            --     data = {
+            --         '.',
+            --         '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
+            --         '%c',
+            --     },
+            -- }),
             info_prefix = opts.info_prefix,
         },
         buffers = {
@@ -255,7 +393,7 @@ function SimpleRepl:new(name, opts)
                 repl_cache[name] = nil
             end,
             on_stdout = function(_, stdin)
-                process_stdin(instance, stdin)
+                process_line_stdin(instance, stdin)
             end,
         })
     end)
@@ -308,6 +446,21 @@ function SimpleRepl:print(text, info)
     end)
 end
 
+local function send_next_line(lines, id)
+    todo_callback = nil
+    if lines[1] ~= '' then
+        local rest = vim.iter(lines):skip(1):totable()
+        if vim.tbl_count(rest) > 0 then
+            todo_callback = function()
+                send_next_line(rest, id)
+            end
+        else
+            todo_callback = nil
+        end
+        vim.fn.chansend(id, lines[1]..'\n')
+    end
+end
+
 ---Send a `cmd` to the REPL for execution
 ---If there is already a command in progress this will print a warning and do nothing else
 ---@param cmd string|string[] The command to execute
@@ -318,10 +471,6 @@ function SimpleRepl:send(cmd, cb)
         vim.notify('There is already a command in progress for "'..self.name..'"!', vim.log.levels.info, {})
         return
     end
-
-    self:_log('########## SEND CMD ##########')
-        :_log('CMD: ', cmd)
-        :_log('##############################')
 
     if type(cmd) == 'table' then
         cmd = table.concat(cmd, '\n')
@@ -336,13 +485,27 @@ function SimpleRepl:send(cmd, cb)
     end
 
     self.process.cmd = vim.iter(vim.split(cmd, '\n'))
-        :rskip(1) -- remove the trailing newline
+        :filter(function(s) return s ~= '' end)
+        -- :rskip(1) -- remove the trailing newline
         :totable()
     self.process.data = {}
     self.process.callback = cb
     self.process.wait_for_cmd = true
 
-    vim.fn.chansend(self.job_id, cmd)
+    self:_log('########## SEND CMD ##########')
+        :_log(self.process.cmd)
+        :_log('##############################')
+
+    -- for _, line in ipairs(vim.split(cmd, '\n')) do
+    --     vim.fn.chansend(self.job_id, line..'\n')
+    --     vim.uv.sleep(50)
+    -- end
+    -- vim.fn.chansend(self.job_id, cmd)
+
+    local command = vim.iter(vim.split(cmd, '\n'))
+        :filter(function(s) return s ~= '' end)
+        :totable()
+    send_next_line(self.process.cmd, self.job_id)
 end
 
 ---Send multiple commands after another to the REPL for execution
@@ -412,6 +575,11 @@ end
 ---@return integer win The window id of the newly opened window
 function SimpleRepl:open_out(location)
     return open(self.buffers.out, location)
+end
+
+---TODO
+function SimpleRepl:abort()
+    -- TODO
 end
 
 ---Kill the REPL job and remove the REPL from cache
@@ -511,6 +679,11 @@ vim.keymap.set('n', '<leader>xn', function()
     M.get('node', {
         cmd = 'node',
         prompt = '> ',
+        filter = {
+            data = {
+                '^%.%.%. ',
+            }
+        },
         out_config = function(b)
             vim.api.nvim_set_option_value('syntax', 'javascript', { buf = b })
             vim.keymap.set('n', '<localleader>r', function()
@@ -528,6 +701,17 @@ vim.keymap.set('n', '<leader>xC', function()
     M.get('clj_extended', {
         cmd = 'clojure -Sdeps "{:deps {com.bhauman/rebel-readline {:mvn/version \\"0.1.4\\"}}}" -m rebel-readline.main',
         prompt = '%S+=> ',
+        filter = {
+            -- TODO does not work
+            data = {
+                replace = true,
+                '^.+[K[A',
+                '.',
+                '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
+                '%c',
+                '^[%w-.]+/%S+: .+%)',
+            }
+        },
         out_config = function(b)
             vim.api.nvim_set_option_value('syntax', 'clojure', { buf = b })
             vim.keymap.set('n', '<localleader>r', function()
