@@ -246,9 +246,14 @@ function SimpleRepl:new(name, opts)
     self.__index = self
     repl_cache[name] = instance
 
+    instance:print('REPL "'..name..'" is starting...', true)
     vim.api.nvim_buf_call(repl_buf, function()
         instance.job_id = vim.fn.termopen(vim.o.shell..';#'..name, {
             cwd = vim.fn.fnamemodify(opts.cwd, ':p'),
+            on_exit = function()
+                instance:print('REPL "'..name..'" was closed', true)
+                repl_cache[name] = nil
+            end,
             on_stdout = function(_, stdin)
                 process_stdin(instance, stdin)
             end,
@@ -256,7 +261,7 @@ function SimpleRepl:new(name, opts)
     end)
 
     instance:send(opts.cmd, function()
-        instance:print("READY", true)
+        instance:print('REPL "'..name..'" is ready', true)
     end)
 
     return instance
@@ -287,10 +292,12 @@ function SimpleRepl:print(text, info)
     end
 
     local out = self.buffers.out
-    local empty_buffer = vim.api.nvim_buf_line_count(out) == 1 and
+
+    local is_unloaded = not vim.api.nvim_buf_is_loaded(out)
+    local is_empty = vim.api.nvim_buf_line_count(out) == 1 and
         vim.api.nvim_buf_get_lines(out, 0, -1, false)[1] == ''
 
-    if empty_buffer then
+    if is_unloaded or is_empty then
         vim.api.nvim_buf_set_lines(out, 0, -1, false, text)
     else
         vim.api.nvim_buf_set_lines(out, -1, -1, false, text)
@@ -367,11 +374,17 @@ function SimpleRepl:send_async(fn)
 end
 
 ---Open a given buffer in a (v)split window
----Does NOT switch to the newly opened window
+---If the buffer is already visible in a window on the current tabpage do nothing
+---Does NOT switch to the buffer window
 ---@param buf number
 ---@param location? "split"|"vsplit" Default is `vsplit`
----@return integer win The window identifier of the newly opened window
+---@return integer win The window identifier of the buffer related window
 local function open(buf, location)
+    local buf_win = vim.fn.bufwinid(buf)
+    if buf_win ~= -1 then
+        return buf_win
+    end
+
     local win = vim.api.nvim_get_current_win()
 
     location = location or 'vsplit'
@@ -401,12 +414,10 @@ function SimpleRepl:open_out(location)
     return open(self.buffers.out, location)
 end
 
--- TODO on_exit hook
+---Kill the REPL job and remove the REPL from cache
 function SimpleRepl:kill()
     vim.fn.jobstop(self.job_id)
     vim.api.nvim_buf_delete(self.buffers.repl, { force = true })
-    self:print('REPL was closed', true)
-    repl_cache[self.name] = nil
 end
 
 ---(De)Activate logging for this REPL
