@@ -29,6 +29,7 @@ local todo_callback
 ---@field prompt string The prompt pattern for this REPL 
 ---@field filter SimpleRepl_ReplConfigFilters Filter options for command and data
 ---@field info_prefix string Prefix being used for informational messages in the out buffer
+---@field newline string The string to use for a newline (defaults to '\n')
 
 ---@class SimpleRepl_ReplBuffers
 ---@field repl number The identifier for the repl buffer
@@ -55,6 +56,7 @@ local SimpleRepl = {}
 ---@field cwd string? The working directory for the REPL (defaults to cwd)
 ---@field info_prefix string? A prefix used for informational messages in the out buffer (e.g. commentstring)
 ---@field out_config fun(buf: number)? Function to further configure the out buffer (set name, syntax etc.)
+---@field newline string? The string to use for a newline (defaults to '\n')
 
 ---Filter the given string `s`
 ---If `filter` is a string use it as a pattern with `gsub` to remove all occurences
@@ -309,6 +311,7 @@ function SimpleRepl:new(name, opts)
         cwd = vim.loop.cwd(),
         info_prefix = ';; ',
         out_config = nil,
+        newline = '\n',
     })
 
     local out_buf = vim.fn.bufnr('repl-out://'..name, 1)
@@ -350,6 +353,7 @@ function SimpleRepl:new(name, opts)
             cwd = opts.cwd,
             cmd = opts.cmd,
             prompt = opts.prompt,
+            newline = opts.newline,
             filter = {
                 cmd = merge_filter(vim.tbl_get(opts, 'filter', 'cmd')),
                 data = merge_filter(vim.tbl_get(opts, 'filter', 'data')),
@@ -457,8 +461,7 @@ local function send_next_line(lines, id)
         else
             todo_callback = nil
         end
-        vim.fn.chansend(id, lines[1]..'\n')
-    end
+        vim.fn.chansend(id, line..repl.config.newline)
 end
 
 ---Send a `cmd` to the REPL for execution
@@ -473,18 +476,18 @@ function SimpleRepl:send(cmd, cb)
     end
 
     if type(cmd) == 'table' then
-        cmd = table.concat(cmd, '\n')
+        cmd = table.concat(cmd, self.config.newline)
     end
 
-    if cmd:match('\n') then
-        self:print('Executing: ' .. cmd:match('^%C+') .. '...', true)
+    if cmd:match(self.config.newline) then
+        self:print('Executing: ' .. cmd:gsub('^%s*', ''):match('^%C+') .. '...', true)
     end
 
-    if not vim.endswith(cmd, '\n') then
-        cmd = cmd .. '\n'
+    if not vim.endswith(cmd, self.config.newline) then
+        cmd = cmd .. self.config.newline
     end
 
-    self.process.cmd = vim.iter(vim.split(cmd, '\n'))
+    self.process.cmd = vim.iter(vim.split(cmd, self.config.newline))
         :filter(function(s) return s ~= '' end)
         -- :rskip(1) -- remove the trailing newline
         :totable()
@@ -502,7 +505,7 @@ function SimpleRepl:send(cmd, cb)
     -- end
     -- vim.fn.chansend(self.job_id, cmd)
 
-    local command = vim.iter(vim.split(cmd, '\n'))
+    local command = vim.iter(vim.split(cmd, self.config.newline))
         :filter(function(s) return s ~= '' end)
         :totable()
     send_next_line(self.process.cmd, self.job_id)
