@@ -11,6 +11,8 @@ local todo_callback
 -- [X] autoscroll for log buffer
 -- [ ] show the current namespace
 -- [ ] autoload the repl namespace for Clojure (disable debugger for SBCL)
+-- [x] replace %c but leave \t in there
+-- [x] python double enter needed...
 
 ---@class SimpleRepl_ReplProcess
 ---@field cmd string[]? The command that is currently executing
@@ -101,9 +103,10 @@ local function process_line_stdin(repl, stdin)
         local s = vim.iter(config.filter.data):fold(str, sfilter)
 
         -- TODO make it nice & document
-        if cmd then
+        -- remove multiple prompts or prefixed prompts
+        if not s:match('^'..config.prompt..'$') then
             local prompt_filter, n = s:gsub('^'..config.prompt, '')
-            while n > 0 do
+            while n > 0 and not s:match('^'..config.prompt..'$') do
                 s = prompt_filter
                 prompt_filter, n = s:gsub('^'..config.prompt, '')
             end
@@ -146,7 +149,7 @@ local function process_line_stdin(repl, stdin)
             else
                 repl:_log('No CMD anymore --> PRINT')
             end
-            repl:print(process.data)
+            repl:print(data_string)
             process.data = {}
             goto continue
         end
@@ -156,7 +159,17 @@ local function process_line_stdin(repl, stdin)
             process.data = {}
             process.cmd = vim.iter(process.cmd):skip(1):totable()
             cmd = process.cmd[1]
-            repl:_log('Next CMD is: "', cmd, '"')
+
+            if cmd == 'THIS IS THE END' then
+                cmd = nil
+                process.cmd = {}
+            end
+
+            if cmd then
+                repl:_log('Next CMD is: "', cmd, '"')
+            else
+                repl:_log('No next CMD!')
+            end
         end
         ::continue::
     end
@@ -324,9 +337,25 @@ function SimpleRepl:new(name, opts)
     local repl_buf = vim.api.nvim_create_buf(false, false)
 
     local default_filter = {
-        '.',
+        -- bracketed mode (see https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Bracketed-Paste-Mode)
+        '\27%[%?2004h.*\27%[%?2004l',
+        '\27%[%?2004h.*$',
+        '^.*\27%[%?2004l',
+        -- replace deletions one by one
+        function(s)
+            local str, x = s:gsub('.\b', '', 1)
+            while x > 0 do
+                str, x = str:gsub('.\b', '', 1)
+            end
+            return str
+        end,
         '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
-        '%c',
+        -- remove all control characters except tabs
+        function(s)
+            return s:gsub('\t', '!TAB!')
+                    :gsub('%c', '')
+                    :gsub('!TAB!', '\t')
+        end,
     }
     local merge_filter = function(filter)
         if not filter then
@@ -358,18 +387,6 @@ function SimpleRepl:new(name, opts)
                 cmd = merge_filter(vim.tbl_get(opts, 'filter', 'cmd')),
                 data = merge_filter(vim.tbl_get(opts, 'filter', 'data')),
             },
-            -- filter = vim.tbl_deep_extend('keep', opts.filter or {}, {
-            --     cmd = {
-            --         '.',
-            --         '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
-            --         '%c',
-            --     },
-            --     data = {
-            --         '.',
-            --         '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
-            --         '%c',
-            --     },
-            -- }),
             info_prefix = opts.info_prefix,
         },
         buffers = {
@@ -450,18 +467,32 @@ function SimpleRepl:print(text, info)
     end)
 end
 
-local function send_next_line(lines, id)
+---TODO
+---@param repl SimpleRepl_Repl
+---@param lines string[]
+local function send_next_line(repl, lines)
     todo_callback = nil
-    if lines[1] ~= '' then
-        local rest = vim.iter(lines):skip(1):totable()
-        if vim.tbl_count(rest) > 0 then
-            todo_callback = function()
-                send_next_line(rest, id)
-            end
-        else
-            todo_callback = nil
+    local line = lines[1]
+
+    repl:_log('~~~~~~~~~~~~~~~')
+        :_log('Send next line: ', line)
+        :_log('~~~~~~~~~~~~~~~')
+
+    if line == 'THIS IS THE END' then
+        line = ''
+    end
+
+    local rest = vim.iter(lines):skip(1):totable()
+
+    if vim.tbl_count(rest) > 0 then
+        todo_callback = function()
+            send_next_line(repl, rest)
         end
-        vim.fn.chansend(id, line..repl.config.newline)
+    else
+        todo_callback = nil
+    end
+
+    vim.fn.chansend(repl.job_id, line..repl.config.newline)
 end
 
 ---Send a `cmd` to the REPL for execution
@@ -489,8 +520,9 @@ function SimpleRepl:send(cmd, cb)
 
     self.process.cmd = vim.iter(vim.split(cmd, self.config.newline))
         :filter(function(s) return s ~= '' end)
-        -- :rskip(1) -- remove the trailing newline
         :totable()
+    -- TODO testing 
+    table.insert(self.process.cmd, 'THIS IS THE END')
     self.process.data = {}
     self.process.callback = cb
     self.process.wait_for_cmd = true
@@ -499,16 +531,7 @@ function SimpleRepl:send(cmd, cb)
         :_log(self.process.cmd)
         :_log('##############################')
 
-    -- for _, line in ipairs(vim.split(cmd, '\n')) do
-    --     vim.fn.chansend(self.job_id, line..'\n')
-    --     vim.uv.sleep(50)
-    -- end
-    -- vim.fn.chansend(self.job_id, cmd)
-
-    local command = vim.iter(vim.split(cmd, self.config.newline))
-        :filter(function(s) return s ~= '' end)
-        :totable()
-    send_next_line(self.process.cmd, self.job_id)
+    send_next_line(self, self.process.cmd)
 end
 
 ---Send multiple commands after another to the REPL for execution
@@ -665,6 +688,11 @@ vim.keymap.set('n', '<leader>xp', function()
     M.get('python', {
         cmd = 'python',
         prompt = '>>> ',
+        filter = {
+            data = {
+                '^%.%.%. ',
+            },
+        },
         out_config = function(b)
             vim.api.nvim_set_option_value('syntax', 'python', { buf = b })
             vim.keymap.set('n', '<localleader>r', function()
