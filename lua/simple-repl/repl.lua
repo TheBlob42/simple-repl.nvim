@@ -19,17 +19,12 @@ local todo_callback
 ---@field data table Used to collect data from stdin
 ---@field callback function? Callback to execute after the current `cmd` is done
 ---@field timer uv_timer_t Timer to check for REPL timeouts and other issues
----@field wait_for_cmd boolean Indicator if the current STDIN data is scanned for the command or the actual result data
-
----@class SimpleRepl_ReplConfigFilters
----@field cmd (string | fun(s: string): string)[] Filters to search for the command string
----@field data (string | fun(s: string): string)[] Filters when gathering result data
 
 ---@class SimpleRepl_ReplConfig
 ---@field cwd string The working directory of the REPL
 ---@field cmd string The command to start the REPL
 ---@field prompt string The prompt pattern for this REPL 
----@field filter SimpleRepl_ReplConfigFilters Filter options for command and data
+---@field filter (string | fun(s: string): string)[] Filter options for stding
 ---@field info_prefix string Prefix being used for informational messages in the out buffer
 ---@field newline string The string to use for a newline (defaults to '\n')
 
@@ -47,14 +42,10 @@ local todo_callback
 ---@field buffers SimpleRepl_ReplBuffers The corresponding buffers
 local SimpleRepl = {}
 
----@class SimpleRepl_NewConfigFilters
----@field cmd (string | fun(s: string): string)[]? Filters to search for the command string
----@field data (string | fun(s: string): string)[]? Filters when gathering result data
-
 ---@class SimpleRepl_NewConfig
 ---@field cmd string The command to start the REPL (e.g. `clj`, `sbcl`, `node`)
 ---@field prompt string The prompt pattern for this REPL (e.g. '%S+=> ', '* ', '> ')
----@field filter SimpleRepl_NewConfigFilters? Filter options for command and data
+---@field filter (string | fun(s: string): string)[]? Filter options for stdin
 ---@field cwd string? The working directory for the REPL (defaults to cwd)
 ---@field info_prefix string? A prefix used for informational messages in the out buffer (e.g. commentstring)
 ---@field out_config fun(buf: number)? Function to further configure the out buffer (set name, syntax etc.)
@@ -99,8 +90,7 @@ local function process_line_stdin(repl, stdin)
     end
 
     for _, str in ipairs(stdin) do
-        -- TODO make it general
-        local s = vim.iter(config.filter.data):fold(str, sfilter)
+        local s = vim.iter(config.filter):fold(str, sfilter)
 
         -- TODO make it nice & document
         -- remove multiple prompts or prefixed prompts
@@ -115,11 +105,6 @@ local function process_line_stdin(repl, stdin)
         repl:_log('---')
             :_log('RAW string: "', str, '"')
             :_log('FILTERED string: "', s, '"')
-
-        if s == '' then
-            repl:_log('Skip EMPTY string!')
-            goto continue
-        end
 
         if s:match('^'..config.prompt..'$') then
             if cmd then
@@ -144,8 +129,12 @@ local function process_line_stdin(repl, stdin)
         -- data is not part of CMD must be output
         if not (cmd and vim.startswith(cmd, data_string)) then
             if cmd then
-                repl:_log('CMD: "', cmd, '"')
-                    :_log('Does not start with "', data_string, '" --> PRINT')
+                if cmd == '' then
+                    repl:_log('Skip empty input!') -- empty strings are not printed
+                else
+                    repl:_log('CMD: "', cmd, '"')
+                        :_log('Does not start with "', data_string, '" --> PRINT')
+                end
             else
                 repl:_log('No CMD anymore --> PRINT')
             end
@@ -160,11 +149,6 @@ local function process_line_stdin(repl, stdin)
             process.cmd = vim.iter(process.cmd):skip(1):totable()
             cmd = process.cmd[1]
 
-            if cmd == 'THIS IS THE END' then
-                cmd = nil
-                process.cmd = {}
-            end
-
             if cmd then
                 repl:_log('Next CMD is: "', cmd, '"')
             else
@@ -177,7 +161,6 @@ local function process_line_stdin(repl, stdin)
     if done then
         repl:_log("DONE")
         process.cmd = nil
-        process.wait_for_cmd = true
         if process.callback then
             local cb = assert(process.callback)
             process.callback = nil
@@ -325,6 +308,7 @@ function SimpleRepl:new(name, opts)
         info_prefix = ';; ',
         out_config = nil,
         newline = '\n',
+        filter = {},
     })
 
     local out_buf = vim.fn.bufnr('repl-out://'..name, 1)
@@ -383,10 +367,7 @@ function SimpleRepl:new(name, opts)
             cmd = opts.cmd,
             prompt = opts.prompt,
             newline = opts.newline,
-            filter = {
-                cmd = merge_filter(vim.tbl_get(opts, 'filter', 'cmd')),
-                data = merge_filter(vim.tbl_get(opts, 'filter', 'data')),
-            },
+            filter = merge_filter(opts.filter),
             info_prefix = opts.info_prefix,
         },
         buffers = {
@@ -444,6 +425,10 @@ function SimpleRepl:print(text, info)
         return
     end
 
+    if vim.iter(text):all(function(t) return t == '' end) then
+        return
+    end
+
     if info then
         text = vim.tbl_map(function(s)
             return self.config.info_prefix .. s
@@ -474,13 +459,9 @@ local function send_next_line(repl, lines)
     todo_callback = nil
     local line = lines[1]
 
-    repl:_log('~~~~~~~~~~~~~~~')
-        :_log('Send next line: ', line)
-        :_log('~~~~~~~~~~~~~~~')
-
-    if line == 'THIS IS THE END' then
-        line = ''
-    end
+    repl:_log('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
+        :_log('Send next line: "', line, '"')
+        :_log('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
 
     local rest = vim.iter(lines):skip(1):totable()
 
@@ -488,8 +469,6 @@ local function send_next_line(repl, lines)
         todo_callback = function()
             send_next_line(repl, rest)
         end
-    else
-        todo_callback = nil
     end
 
     vim.fn.chansend(repl.job_id, line..repl.config.newline)
@@ -506,26 +485,17 @@ function SimpleRepl:send(cmd, cb)
         return
     end
 
-    if type(cmd) == 'table' then
-        cmd = table.concat(cmd, self.config.newline)
+    if type(cmd) == 'string' then
+        cmd = vim.split(cmd, '\n')
     end
 
-    if cmd:match(self.config.newline) then
-        self:print('Executing: ' .. cmd:gsub('^%s*', ''):match('^%C+') .. '...', true)
+    if vim.tbl_count(cmd) > 1 then
+        self:print('Executing: ' .. cmd[1]:gsub('^%s*', '') .. '...', true)
     end
 
-    if not vim.endswith(cmd, self.config.newline) then
-        cmd = cmd .. self.config.newline
-    end
-
-    self.process.cmd = vim.iter(vim.split(cmd, self.config.newline))
-        :filter(function(s) return s ~= '' end)
-        :totable()
-    -- TODO testing 
-    table.insert(self.process.cmd, 'THIS IS THE END')
+    self.process.cmd = cmd
     self.process.data = {}
     self.process.callback = cb
-    self.process.wait_for_cmd = true
 
     self:_log('########## SEND CMD ##########')
         :_log(self.process.cmd)
@@ -622,6 +592,14 @@ function SimpleRepl:logging(val)
     return self
 end
 
+---Return the logfile path for the REPL named `name`
+---@param name string Name of the corresponding REPL
+---@return string path The logfile path (absolute)
+local function get_log_file(name)
+    ---@diagnostic disable-next-line: param-type-mismatch
+    return vim.fs.joinpath(vim.fn.stdpath('log'), 'simple-repl-' .. name .. '-log.txt')
+end
+
 ---Log to a REPL specific log file for inspection
 ---All passed parameters will be concatenated to a single line
 ---For multiple lines you have to call this function multiple times
@@ -633,8 +611,6 @@ end
 ---@see SimpleRepl_Repl.logging
 function SimpleRepl:_log(...)
     if self.is_logging then
-        ---@diagnostic disable-next-line: param-type-mismatch
-        local file = vim.fs.joinpath(vim.fn.stdpath('log'), 'simple-repl-' .. self.name .. '-log.txt')
         local line = table.concat(vim.iter({...})
             :map(function(s)
                 if type(s) ~= "string" then
@@ -644,15 +620,14 @@ function SimpleRepl:_log(...)
                 return s
             end)
             :totable(), '')
-        vim.fn.writefile({ line }, file, 'as')
+        vim.fn.writefile({ line }, get_log_file(self.name), 'as')
     end
     return self
 end
 
 ---Open the corresponding log file for this REPL in the current window
 function SimpleRepl:open_log_file()
-    ---@diagnostic disable-next-line: param-type-mismatch
-    local file = vim.fs.joinpath(vim.fn.stdpath('log'), 'simple-repl-' .. self.name .. '-log.txt')
+    local file = get_log_file(self.name)
     if vim.loop.fs_stat(file) then
         vim.cmd.e(file)
     else
