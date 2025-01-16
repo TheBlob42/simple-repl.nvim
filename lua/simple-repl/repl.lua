@@ -69,6 +69,9 @@ local function sfilter(s, filter)
     return result
 end
 
+---TODO
+---@param repl SimpleRepl_Repl
+---@param stdin string[]
 local function process_line_stdin(repl, stdin)
     repl:_log('-------')
         :_log("STDIN: ", stdin)
@@ -179,121 +182,30 @@ local function process_line_stdin(repl, stdin)
     end
 end
 
----Process the incoming data from `stdin` for the specific `repl`
----@param repl SimpleRepl_Repl
----@param stdin string[]
-local function process_stdin(repl, stdin)
-    repl:_log("STDIN: ", stdin)
-
-    local config = repl.config
-    local process = repl.process
-    if not process.cmd then
-        return
-    end
-
-    process.timer:stop()
-
-    local done = false
-    local cmd = vim.pesc(vim.iter(process.cmd):last())
-
-    if not repl.is_ready then
-        cmd = config.prompt
-        repl:_log('REPL is not ready yet, changing CMD to prompt: "', cmd, '"')
-    end
-
-    for _, str in ipairs(stdin) do
-        repl:_log('---')
-        if process.wait_for_cmd then
-            local s = vim.iter(config.filter.cmd):fold(str, sfilter)
-
-            repl:_log('Searching CMD')
-                :_log('Raw String: "', str, '"')
-                :_log('Filtered String: "', s, '"')
-
-            if s == '' then
-                goto continue
-            end
-
-            -- TODO if (raw) str ends with newline and does not match CMD we can probably skip it
-            -- preventing the terminal from blocking the whole editor (for too long)
-
-            table.insert(process.data, s)
-
-            if table.concat(process.data, ''):match('.*'..cmd..'%c*$') then
-                repl:_log('Found CMD ("', cmd, '")')
-                process.wait_for_cmd = false
-                process.data = {}
-                if not repl.is_ready then
-                    done = true
-                    repl.is_ready = true
-                    break
-                end
-            end
-        else
-            local s = vim.iter(config.filter.data):fold(str, sfilter)
-
-            repl:_log('Gathering Data')
-                :_log('Raw String: "', str, '"')
-                :_log('Filtered String: "', s, '"')
-
-            if s == '' then
-                goto continue
-            end
-
-            if s:match('^'..config.prompt..'$') then
-                repl:_log('Found PROMPT ("^', config.prompt, '$")')
-                done = true
-                break
-            end
-
-            table.insert(process.data, s)
-        end
-        ::continue::
-    end
-
-    repl:_log('---')
-        :_log("Data: ", process.data)
-        :_log('')
-
-    if not process.wait_for_cmd then
-        repl:print(process.data)
-        process.data = {}
-    end
-
-    if done then
-        process.cmd = nil
-        process.wait_for_cmd = true
-        if process.callback then
-            local cb = assert(process.callback)
-            process.callback = nil
-            cb()
-        end
-    else
-        process.timer:start(5000, 0, vim.schedule_wrap(function()
-            repl:print('no data received from REPL', true)
-        end))
-
-        if todo_callback then
-            todo_callback()
-        end
-    end
-end
-
----Get or create a REPL with the `name`
+---Get the REPL by `name`
 ---
----If a REPL with the given `name` does not exist but create `opts`
----are provided a new one will be created, otherwise nil is returned
+---If a REPL with the given `name` exists it will be returned from cache
+---If it does NOT exist AND you passed the REPL `opts` a new one will be created
 ---
+---```lua
+---repl.get('existing') -- the existing REPL will be returned from cache
+---repl.get('non-existing') -- returns `nil`
+---repl.get('existing', {...}) -- the existing REPL will be returned from cache
+---repl.get('non-existing', {...}) -- a new REPL will be created and returned
+---```
+---@overload fun(name: string): SimpleRepl_Repl?
 ---@param name string The name of the REPL
----@param opts SimpleRepl_NewConfig? Options to create a REPL if not existing
----@return SimpleRepl_Repl? repl
+---@param opts SimpleRepl_NewConfig Options to create a REPL if not existing
+---@return SimpleRepl_Repl repl
 function M.get(name, opts)
     local r = repl_cache[name]
-    if r or not opts then
+    if r then
         return r
     end
 
-    return SimpleRepl:new(name, opts)
+    if opts then
+        return SimpleRepl:new(name, opts)
+    end
 end
 
 ---Create a new REPL
@@ -453,8 +365,8 @@ function SimpleRepl:print(text, info)
 end
 
 ---TODO
----@param repl SimpleRepl_Repl
----@param lines string[]
+---@param repl SimpleRepl_Repl The REPL to send the next line to
+---@param lines string[] The remaining lines that need to be processed
 local function send_next_line(repl, lines)
     todo_callback = nil
     local line = lines[1]
