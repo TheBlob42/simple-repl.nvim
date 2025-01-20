@@ -1,8 +1,6 @@
 local M = {}
 local repl_cache = {}
 
-local todo_callback
-
 -- TODO
 -- [X] "repl is ready" message (print this on the first prompt sign being visible)
 -- [-] repl-types (line wise and char wise)
@@ -17,6 +15,7 @@ local todo_callback
 ---@class SimpleRepl_ReplProcess
 ---@field cmd string[]? The command that is currently executing
 ---@field data table Used to collect data from stdin
+---@field next function? Next step callback function
 ---@field callback function? Callback to execute after the current `cmd` is done
 ---@field timer uv_timer_t Timer to check for REPL timeouts and other issues
 
@@ -177,8 +176,8 @@ local function process_line_stdin(repl, stdin)
     end
 
 
-    if todo_callback then
-        todo_callback()
+    if process.next then
+        process.next()
     end
 end
 
@@ -364,11 +363,10 @@ function SimpleRepl:print(text, info)
     end)
 end
 
----TODO
+---Send the next line of `lines` to the `repl`
 ---@param repl SimpleRepl_Repl The REPL to send the next line to
 ---@param lines string[] The remaining lines that need to be processed
 local function send_next_line(repl, lines)
-    todo_callback = nil
     local line = lines[1]
 
     repl:_log('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
@@ -377,8 +375,9 @@ local function send_next_line(repl, lines)
 
     local rest = vim.iter(lines):skip(1):totable()
 
+    repl.process.next = nil
     if vim.tbl_count(rest) > 0 then
-        todo_callback = function()
+        repl.process.next = function()
             send_next_line(repl, rest)
         end
     end
