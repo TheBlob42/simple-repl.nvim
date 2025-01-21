@@ -49,6 +49,7 @@ local SimpleRepl = {}
 ---@field info_prefix string? A prefix used for informational messages in the out buffer (e.g. commentstring)
 ---@field out_config fun(buf: number)? Function to further configure the out buffer (set name, syntax etc.)
 ---@field newline string? The string to use for a newline (defaults to '\n')
+---@field on_ready fun(repl: SimpleRepl_Repl)? Callback function when the REPL is ready
 
 ---Filter the given string `s`
 ---If `filter` is a string use it as a pattern with `gsub` to remove all occurences
@@ -215,6 +216,7 @@ function SimpleRepl:new(name, opts)
     ---@type SimpleRepl_NewConfig
     opts = vim.tbl_extend("keep", opts or {}, {
         cmd = '',
+        on_ready = nil,
         cwd = vim.loop.cwd(),
         info_prefix = ';; ',
         out_config = nil,
@@ -313,6 +315,9 @@ function SimpleRepl:new(name, opts)
 
     instance:send(opts.cmd, function()
         instance:print('REPL "'..name..'" is ready', true)
+        if opts.on_ready then
+            opts.on_ready(instance)
+        end
     end)
 
     return instance
