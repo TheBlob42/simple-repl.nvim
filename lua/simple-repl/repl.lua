@@ -85,6 +85,7 @@ local function process_line_stdin(repl, stdin)
     process.timer:stop()
 
     local done = false
+    ---@type string?
     local cmd = process.cmd[1]
 
     if not repl.is_ready then
@@ -249,9 +250,10 @@ function SimpleRepl:new(name, opts)
         '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
         -- remove all control characters except tabs
         function(s)
-            return s:gsub('\t', '!TAB!')
-                    :gsub('%c', '')
-                    :gsub('!TAB!', '\t')
+            s =  s:gsub('\t', '!TAB!')
+                  :gsub('%c', '')
+                  :gsub('!TAB!', '\t')
+            return s
         end,
     }
     local merge_filter = function(filter)
@@ -421,7 +423,7 @@ function SimpleRepl:send(cmd, cb)
 end
 
 ---Send multiple commands after another to the REPL for execution
----You can already use the callback of [send](lua://SimpleRepl_Repl.send) for it, but the creates a callback "hell"
+---You can already use the callback of [send](lua://SimpleRepl_Repl.send) for it, but the creates a "callback hell"
 ---This is similar to the `async/await` functionality of other programming languages
 ---
 ---## Example
@@ -435,15 +437,31 @@ end
 ---    -- final code to execute
 ---end)
 ---```
----@param fn fun(send: fun(cmd: string|string[]))
+---The `print` function of the REPL can be passed as an optional function parameter
+---This is useful to print updates about the overall process
+---```lua
+---require('simple.repl.repl').get('REPL'):async_send(function(send, prnt)
+---    prnt("Starting", true)
+---    send({ "..." })
+---    prnt("Almost done", true)
+---    send({ "..." })
+---    prnt("Done", true)
+---end)
+---```
+---@param fn fun(send: fun(cmd: string|string[]), print: fun(msg: string, info: boolean)?)
 ---@see SimpleRepl_Repl.send
+---@see SimpleRepl_Repl.print
 function SimpleRepl:send_async(fn)
     local cb
     local send = function(cmd)
         coroutine.yield(self:send(cmd, cb))
     end
+    local prnt = function(text, info)
+        self:print(text, info)
+    end
+
     cb = coroutine.wrap(function()
-        fn(send)
+        fn(send, prnt)
     end)
     cb()
 end
@@ -489,9 +507,10 @@ function SimpleRepl:open_out(location)
     return open(self.buffers.out, location)
 end
 
----TODO
+---TODO we need to surpass the cmd check in `send`
 function SimpleRepl:abort()
-    -- TODO
+    local abort = vim.api.nvim_replace_termcodes('<C-c>', true, false, true)
+    self:send({ abort })
 end
 
 ---Kill the REPL job and remove the REPL from cache
