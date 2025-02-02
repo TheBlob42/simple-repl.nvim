@@ -41,10 +41,14 @@ local repl_cache = {}
 ---@field buffers SimpleRepl_ReplBuffers The corresponding buffers
 local SimpleRepl = {}
 
+---@class SimpleRepl_NewFilterConfig
+---@field replace boolean? Should the default filters be completely replaced? Otherwise the custom filter options are appended to them
+---@field filter (string | fun(s: string): string)[] Filter options for STDIN. Either a string used with `gsub` or a function. The filters are applied in the exact order they are given
+
 ---@class SimpleRepl_NewConfig
 ---@field cmd string The command to start the REPL (e.g. `clj`, `sbcl`, `node`)
 ---@field prompt string The prompt pattern for this REPL (e.g. '%S+=> ', '* ', '> ')
----@field filter (string | fun(s: string): string)[]? Filter options for stdin
+---@field filter_config SimpleRepl_NewFilterConfig? Filter configuration for this REPL
 ---@field cwd string? The working directory for the REPL (defaults to cwd)
 ---@field info_prefix string? A prefix used for informational messages in the out buffer (e.g. commentstring)
 ---@field out_config fun(buf: number)? Function to further configure the out buffer (set name, syntax etc.)
@@ -209,6 +213,32 @@ function M.get(name, opts)
     end
 end
 
+---The default filter options that should be used for any REPLs STDIN data
+---Strings are used with `"string_to_filter":gsub('<string>', '')`
+---Functions take a string parameter and return a string for more complex filter applications
+local default_filter = {
+    -- bracketed mode (https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Bracketed-Paste-Mode)
+    '\27%[%?2004h.*\27%[%?2004l',
+    '^.*\27%[%?2004l',
+    -- replace deletions one after another
+    function(s)
+        local str, x = s:gsub('.\b', '', 1)
+        while x > 0 do
+            str, x = str:gsub('.\b', '', 1)
+        end
+        return str
+    end,
+    -- remove terminal escape sequences
+    '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
+    -- remove all control characters except tabs
+    function(s)
+        s = s:gsub('\t', '!TAB!')
+             :gsub('%c', '')
+             :gsub('!TAB!', '\t')
+        return s
+    end,
+}
+
 ---Create a new REPL
 ---@param name string The name of the REPL. This is used to retrieve the REPL via `require('simple-repl.repl').get(<name>)`
 ---@param opts SimpleRepl_NewConfig Further configuration options
@@ -222,7 +252,7 @@ function SimpleRepl:new(name, opts)
         info_prefix = ';; ',
         out_config = nil,
         newline = '\n',
-        filter = {},
+        filter_config = nil,
     })
 
     local out_buf = vim.fn.bufnr('repl-out://'..name, 1)
@@ -234,42 +264,17 @@ function SimpleRepl:new(name, opts)
     end
     local repl_buf = vim.api.nvim_create_buf(false, false)
 
-    local default_filter = {
-        -- bracketed mode (see https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Bracketed-Paste-Mode)
-        '\27%[%?2004h.*\27%[%?2004l',
-        '\27%[%?2004h.*$',
-        '^.*\27%[%?2004l',
-        -- replace deletions one by one
-        function(s)
-            local str, x = s:gsub('.\b', '', 1)
-            while x > 0 do
-                str, x = str:gsub('.\b', '', 1)
+    -- create the filter options for this REPL
+    local filter = default_filter
+    if opts.filter_config then
+        if opts.filter_config.replace then
+            filter = opts.filter_config.filter
+        else
+            filter = { unpack(default_filter) }
+            for _, f in ipairs(opts.filter_config.filter) do
+                table.insert(filter, f)
             end
-            return str
-        end,
-        '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
-        -- remove all control characters except tabs
-        function(s)
-            s =  s:gsub('\t', '!TAB!')
-                  :gsub('%c', '')
-                  :gsub('!TAB!', '\t')
-            return s
-        end,
-    }
-    local merge_filter = function(filter)
-        if not filter then
-            return default_filter
         end
-
-        if filter.replace then
-            return filter
-        end
-
-        local result = { unpack(default_filter) }
-        for _, f in ipairs(filter) do
-            table.insert(result, f)
-        end
-        return result
     end
 
     local instance = {
@@ -282,7 +287,7 @@ function SimpleRepl:new(name, opts)
             cmd = opts.cmd,
             prompt = opts.prompt,
             newline = opts.newline,
-            filter = merge_filter(opts.filter),
+            filter = filter,
             info_prefix = opts.info_prefix,
         },
         buffers = {
@@ -598,10 +603,10 @@ vim.keymap.set('n', '<leader>xp', function()
     M.get('python', {
         cmd = 'python',
         prompt = '>>> ',
-        filter = {
-            data = {
-                '^%.%.%. ',
-            },
+        filter_config = {
+            filter = {
+                '^%.%.%. '
+            }
         },
         out_config = function(b)
             vim.api.nvim_set_option_value('syntax', 'python', { buf = b })
@@ -620,8 +625,8 @@ vim.keymap.set('n', '<leader>xn', function()
     M.get('node', {
         cmd = 'node',
         prompt = '> ',
-        filter = {
-            data = {
+        filter_config = {
+            filter = {
                 '^%.%.%. ',
             }
         },
@@ -638,51 +643,10 @@ vim.keymap.set('x', '<leader>xn', function()
     M.v_send_to_repl('node')
 end, {})
 
-vim.keymap.set('n', '<leader>xC', function()
-    M.get('clj_extended', {
-        cmd = 'clojure -Sdeps "{:deps {com.bhauman/rebel-readline {:mvn/version \\"0.1.4\\"}}}" -m rebel-readline.main',
-        prompt = '%S+=> ',
-        filter = {
-            -- TODO does not work
-            data = {
-                replace = true,
-                '^.+[K[A',
-                '.',
-                '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
-                '%c',
-                '^[%w-.]+/%S+: .+%)',
-            }
-        },
-        out_config = function(b)
-            vim.api.nvim_set_option_value('syntax', 'clojure', { buf = b })
-            vim.keymap.set('n', '<localleader>r', function()
-                M.get('clj_extended'):open_repl("split")
-            end, { buffer = b })
-        end,
-    }):open_out()
-end, { desc = 'clojure extended' })
-
-vim.keymap.set('x', '<leader>xC', function()
-    M.v_send_to_repl('clj_extended')
-end, {})
-
 vim.keymap.set('n', '<leader>xl', function()
     M.get('sbcl', {
         cmd = 'rlwrap sbcl',
-        -- cmd = 'sbcl',
         prompt = '%* ',
-        filter = {
-            cmd = {
-                function(s)
-                    if vim.endswith(s, '\r\r') or s:match('%* $') then
-                        return s
-                    end
-                    return ''
-                end,
-                '\27%[[m?]?[0-9;]*[mnhlsufABCDEFGHKJ]?',
-                '%c',
-            } ,
-        },
         out_config = function(b)
             vim.api.nvim_set_option_value('syntax', 'lisp', { buf = b })
             vim.keymap.set('n', '<localleader>r', function()
