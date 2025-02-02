@@ -14,7 +14,7 @@ local repl_cache = {}
 
 ---@class SimpleRepl_ReplProcess
 ---@field cmd string[]? The command that is currently executing
----@field data table Used to collect data from stdin
+---@field data table Used to collect data from STDIN
 ---@field next function? Next step callback function
 ---@field callback function? Callback to execute after the current `cmd` is done
 ---@field timer uv_timer_t Timer to check for REPL timeouts and other issues
@@ -23,7 +23,7 @@ local repl_cache = {}
 ---@field cwd string The working directory of the REPL
 ---@field cmd string The command to start the REPL
 ---@field prompt string The prompt pattern for this REPL 
----@field filter (string | fun(s: string): string)[] Filter options for stding
+---@field filter (string | fun(s: string): string)[] Filter options for STDIN
 ---@field info_prefix string Prefix being used for informational messages in the out buffer
 ---@field newline string The string to use for a newline (defaults to '\n')
 
@@ -56,7 +56,7 @@ local SimpleRepl = {}
 ---@field on_ready fun(repl: SimpleRepl_Repl)? Callback function when the REPL is ready
 
 ---Filter the given string `s`
----If `filter` is a string use it as a pattern with `gsub` to remove all occurences
+---If `filter` is a string use it as a pattern with `gsub` to remove all occurrences
 ---If `filter` is a function apply it to `s` and return the result
 ---@param s string
 ---@param filter string|fun(s: string): string
@@ -445,12 +445,12 @@ end
 ---The `print` function of the REPL can be passed as an optional function parameter
 ---This is useful to print updates about the overall process
 ---```lua
----require('simple.repl.repl').get('REPL'):async_send(function(send, prnt)
----    prnt("Starting", true)
+---require('simple.repl.repl').get('REPL'):async_send(function(send, p)
+---    p("Starting", true)
 ---    send({ "..." })
----    prnt("Almost done", true)
+---    p("Almost done", true)
 ---    send({ "..." })
----    prnt("Done", true)
+---    p("Done", true)
 ---end)
 ---```
 ---@param fn fun(send: fun(cmd: string|string[]), print: fun(msg: string, info: boolean)?)
