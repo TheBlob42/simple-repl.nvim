@@ -73,9 +73,14 @@ local function sfilter(s, filter)
     return result
 end
 
----TODO
----@param repl SimpleRepl_Repl
----@param stdin string[]
+---Process incoming `stdin` data for `repl`
+---
+---This includes:
+---- Filtering the data by removing unwanted parts (e.g. escape sequences, cursors motions etc.)
+---- Searching for the executed command string (this separates REPL input from output)
+---- Printing any output that has not been filtered and is not part of the executed command string
+---@param repl SimpleRepl_Repl The specific REPL
+---@param stdin string[] The incoming data via STDIN
 local function process_line_stdin(repl, stdin)
     repl:_log('-------')
         :_log("STDIN: ", stdin)
@@ -100,14 +105,13 @@ local function process_line_stdin(repl, stdin)
     for _, str in ipairs(stdin) do
         local s = vim.iter(config.filter):fold(str, sfilter)
 
-        -- TODO make it nice & document
-        -- remove multiple prompts or prefixed prompts
-        if not s:match('^'..config.prompt..'$') then
-            local prompt_filter, n = s:gsub('^'..config.prompt, '')
-            while n > 0 and not s:match('^'..config.prompt..'$') do
-                s = prompt_filter
-                prompt_filter, n = s:gsub('^'..config.prompt, '')
-            end
+        -- remove multiple prompts on the same line (e.g. 'user=> user=> ')
+        -- remove prompt prefixes for output values (e.g. 'user=> 1234')
+        -- only a single prompt without any trailing string is desired (e.g. "user=> ")
+        local prompt_filter, n = s:gsub('^'..config.prompt, '')
+        while n > 0 and not s:match('^'..config.prompt..'$') do
+            s = prompt_filter
+            prompt_filter, n = s:gsub('^'..config.prompt, '')
         end
 
         repl:_log('---')
@@ -302,7 +306,8 @@ function SimpleRepl:new(name, opts)
         },
     }
 
-    setmetatable(instance, self)
+    ---@type SimpleRepl_Repl
+    instance = setmetatable(instance, self)
     self.__index = self
     repl_cache[name] = instance
 
@@ -320,12 +325,13 @@ function SimpleRepl:new(name, opts)
         })
     end)
 
-    instance:send(opts.cmd, function()
-        instance:print('REPL "'..name..'" is ready', true)
-        if opts.on_ready then
-            opts.on_ready(instance)
-        end
-    end)
+    instance:send(opts.cmd, {
+        callback = function()
+            instance:print('REPL "'..name..'" is ready', true)
+            if opts.on_ready then
+                opts.on_ready(instance)
+            end
+        end })
 
     return instance
 end
@@ -335,9 +341,10 @@ end
 ---If the `text` is `nil` or an empty table, this will print nothing
 ---@param text string|string[]? The text to print into the REPLs out buffer
 ---@param info boolean? If the message is considered "informational" and should use the `info_prefix`
+---@return SimpleRepl_Repl repl For method chaining
 function SimpleRepl:print(text, info)
     if not text then
-        return
+        return self
     end
 
     if type(text) == "string" then
@@ -345,11 +352,11 @@ function SimpleRepl:print(text, info)
     end
 
     if vim.tbl_isempty(text) then
-        return
+        return self
     end
 
     if vim.iter(text):all(function(t) return t == '' end) then
-        return
+        return self
     end
 
     if info then
@@ -373,6 +380,8 @@ function SimpleRepl:print(text, info)
     vim.api.nvim_buf_call(out, function()
         vim.cmd.normal{ "G", bang = true }
     end)
+
+    return self
 end
 
 ---Send the next line of `lines` to the `repl`
@@ -398,12 +407,21 @@ local function send_next_line(repl, lines)
 end
 
 ---Send a `cmd` to the REPL for execution
+---
 ---If there is already a command in progress this will print a warning and do nothing else
+---This behavior can be overwritten by setting the `force` option (e.g. to send an abort command)
+---
+---You can also specify an optional `callback` that is executed once the command has finished
 ---@param cmd string|string[] The command to execute
----@param cb function? Optional callback function to be called after `cmd` was executed
+---@param opts { callback: fun(), force: boolean }? Additional configuration options
 ---@see SimpleRepl_Repl.send_async
-function SimpleRepl:send(cmd, cb)
-    if self.process.cmd then
+function SimpleRepl:send(cmd, opts)
+    opts = vim.tbl_extend('keep', opts or {}, {
+        force = false,
+        callback = nil,
+    })
+
+    if self.process.cmd and not opts.force then
         vim.notify('There is already a command in progress for "'..self.name..'"!', vim.log.levels.info, {})
         return
     end
@@ -418,7 +436,7 @@ function SimpleRepl:send(cmd, cb)
 
     self.process.cmd = cmd
     self.process.data = {}
-    self.process.callback = cb
+    self.process.callback = opts.callback
 
     self:_log('########## SEND CMD ##########')
         :_log(self.process.cmd)
@@ -459,7 +477,7 @@ end
 function SimpleRepl:send_async(fn)
     local cb
     local send = function(cmd)
-        coroutine.yield(self:send(cmd, cb))
+        coroutine.yield(self:send(cmd, { callback = cb }))
     end
     local prnt = function(text, info)
         self:print(text, info)
