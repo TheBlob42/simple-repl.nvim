@@ -540,6 +540,7 @@ end
 function SimpleRepl:kill()
     vim.fn.jobstop(self.job_id)
     vim.api.nvim_buf_delete(self.buffers.repl, { force = true })
+    self.is_ready = false
 end
 
 ---(De)Activate logging for this REPL
